@@ -1,0 +1,65 @@
+# Starting order for SORT TOP (best / most likely to be played first).
+# Each launch adds 12 points (about 6 places). Starred games always come first.
+# Games not listed start at 0 and sit below these, A-Z, until played.
+Pokemon Crystal.gbc
+Zelda - Link's Awakening DX.gbc
+Pokemon Gold.gbc
+Pokemon Silver.gbc
+Zelda - Oracle of Seasons.gbc
+Zelda - Oracle of Ages.gbc
+Super Mario Bros. Deluxe.gbc
+Pokemon Red.gb
+Pokemon Blue.gb
+Pokemon Yellow.gb
+Super Mario Land 2 - 6 Golden Coins.gb
+Wario Land 3.gbc
+Tetris DX.gbc
+Metroid II - Return of Samus.gb
+Dragon Quest I & II.gbc
+Donkey Kong.gb
+Kirby's Dream Land 2.gb
+Shantae.gbc
+Mega Man Xtreme.gbc
+Mario Golf.gbc
+Mario Tennis.gbc
+Metal Gear Solid.gbc
+Pokemon Pinball.gbc
+R-Type DX.gbc
+Dragon Warrior III.gbc
+Mole Mania.gb
+Super Mario Land.gb
+Survival Kids.gbc
+Mr. Driller.gbc
+Mega Man Xtreme 2.gbc
+Mega Man V.gb
+Donkey Kong Country.gbc
+Mario's Picross 2.gb
+Pokemon Puzzle Challenge.gbc
+Puyo Puyo.gb
+Harvest Moon 3.gbc
+Trip World.gb
+Game & Watch Gallery.gb
+Toki Tori.gbc
+Hamtaro - Ham-Hams Unite!.gbc
+Warlocked.gbc
+Tomb Raider - Curse of the Sword.gbc
+Prince of Persia.gbc
+Perfect Dark.gbc
+Grand Theft Auto.gbc
+Grand Theft Auto 2.gbc
+Street Fighter Alpha.gbc
+Rayman.gbc
+Ms. Pac-Man.gbc
+Croc 2.gbc
+Battletoads.gb
+Batman.gb
+Bugs Bunny Crazy Castle 4.gbc
+Looney Tunes.gbc
+Daffy Duck - Fowl Play.gbc
+Daffy Duck - The Marvin Missions.gb
+Speedy Gonzales - Aztec Adventure.gbc
+Speedy Gonzales.gb
+Power Rangers - Lightspeed Rescue.gbc
+Power Rangers - Time Force.gbc
+Tarzan.gbc
+Toy Story 2.gbc

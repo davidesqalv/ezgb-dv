@@ -65,3 +65,7 @@ re/kernel/*/label-proposals.txt
 /sd/
 
 dist/
+
+# ezgb-dv build output (dv/build.py, dv/tests/run.py)
+dv/build/
+!dv/tests/fixtures/*.bin
