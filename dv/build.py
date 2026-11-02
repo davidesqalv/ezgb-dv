@@ -66,6 +66,8 @@ C_BLOCKS = {
                                           "FarCallDrawLoadingBox": 0x0483, "ManageSaves": 0x6d11, "DrawRect": 0x27ba,
                                           "StoreDrawParams": 0x2791, "StarQueryStub": 0x3ee4, "StarToggleStub": 0x3eec,
                                           "ResortStub": 0x3ef4}),
+    "auto_backup.c":            (0x7680, {"SmSaveOp": 0x6562, "RtcReadPage": 0x1a9a, "FarCallDrawString12": 0x05c0,
+                                          "LastRomNameStub": 0x0368, "DrawRect": 0x27ba, "StoreDrawParams": 0x2791}),
 }
 
 
@@ -302,6 +304,18 @@ def build(data):
                   (0x68dd, "2100a4"), (0x68e6, "1102a4"), (0x68ef, "ea03a4")]:
         r.patch(4, a, op, op[:4] + "b1", "SET row record $A40x -> $B10x")
     r.patch(4, 0x699c, b"SGB BOOT:".hex(), b"SORT A-Z:".hex(), "SET row label SORT A-Z")
+
+    # --- one backup per game of the save from before the day's first session (auto_backup.c at 04:7680) ---
+    ab, ab_syms = compile_block("auto_backup.c")
+    assert ab_syms["AutoBackup"] == 0x7680 and 0x7680 + len(ab) <= 0x7c00
+    o = off(4, 0x7680)
+    if any(x != 0xFF for x in r.d[o:o + len(ab)]):
+        raise SystemExit("bank 4 AutoBackup target is not free")
+    r.d[o:o + len(ab)] = ab
+    r.log.append(f"04:7680  AutoBackup: back the save up on the day's first dump, one kept ({len(ab)} bytes)")
+    abstub = b"\xc5" + stub(0x7680, 4) + bytes.fromhex("3e00f533c3210f")    # push bc; AutoBackup; then the hook's own tail
+    r.patch(0, 0x3e8d, "ff" * len(abstub), abstub.hex(), "AutoBackupStub")
+    r.patch(0, 0x03bf, "c53e00f533c3210f", "c38d3effffffffff", "SaveStampHook: after the stamp check -> AutoBackupStub")
 
     # --- FW5 fast load only on the Chromatic (asm/detect.asm) ---
     dt, symd = assemble("detect")
