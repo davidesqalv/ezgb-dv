@@ -24,7 +24,9 @@ games from an SD card. It's based on [lukesau's ezgb](https://github.com/lukesau
   Play counts are saved on the cartridge. A setting switches to A–Z.
 - **Stars:** hold A on a game and pick Star to keep it at the top.
 - **Navigation:** the list wraps around at both ends, with a position counter
-  (5/62).
+  (5/62). Scrolling past the top or bottom row slides the list by one row and
+  draws only the rows around the cursor, instead of redrawing all ten, so it
+  takes about half as long.
 - **Daily save backup:** the first time the console starts each day after a
   game was played, the menu copies that game's save to a backup before
   writing the new one over it, with a box that says which game and about how

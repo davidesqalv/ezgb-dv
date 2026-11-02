@@ -61,7 +61,7 @@ C_BLOCKS = {
     "browser_icons.c":          (0x6b80, {"DrawString12": 0x7500, "wDrawColor": 0xd734, "RecolorIcon": 0x6d60}),
     "browser_scroll_repaint.c": (0x3d8c, {"browser_scroll_down": 0x3ed0, "FarCallDrawDetailBottom": 0x03dc, "DrawString": 0x08b7,
                                           "StoreDrawParams": 0x2791, "DrawNameWithIcon": 0x3ec8}),
-    "ezjr_scroll.c":            (0x7962, {}),
+    "ezjr_scroll.c":            (0x7962, {"ShiftRows": 0x7680}),
     "rom_menu.c":               (0x5a00, {"FarCallDrawString12": 0x05c0, "LastRomNameStub": 0x0368, "LastRomTickStub": 0x0370,
                                           "FarCallDrawLoadingBox": 0x0483, "ManageSaves": 0x6d11, "DrawRect": 0x27ba,
                                           "StoreDrawParams": 0x2791, "StarQueryStub": 0x3ee4, "StarToggleStub": 0x3eec,
@@ -265,6 +265,13 @@ def build(data):
         raise SystemExit("bank 5 target is not free")
     r.d[o:off(5, hi5)] = b5[o:off(5, hi5)]
     r.log.append(f"05:{lo5:04x}  bank 5 block: scroll, counter, TOP sort, play counts, stars ({hi5 - lo5} bytes)")
+    lo, hi = sym5["ShiftRows"], sym5["__end_vrammove__"]
+    assert lo == 0x7680 and hi <= 0x7700
+    o = off(5, lo)
+    if any(x != 0xFF for x in r.d[o:off(5, hi)]):
+        raise SystemExit("bank 5 ShiftRows target is not free")
+    r.d[o:off(5, hi)] = b5[o:off(5, hi)]
+    r.log.append(f"05:{lo:04x}  ShiftRows: a one-row scroll moves the drawn rows in VRAM ({hi - lo} bytes)")
     r.patch(0, 0x3ed0, r.d[off(0, 0x3ed0):off(0, 0x3ed8)].hex(), (stub(scroll_syms["ezjr_scroll_down"], 5) + b"\xc9").hex(), "DOWN -> 05 ezjr_scroll_down (wraps)")
     r.patch(0, 0x3fbb, r.d[off(0, 0x3fbb):off(0, 0x3fc3)].hex(), (stub(scroll_syms["ezjr_scroll_up"], 5) + b"\xc9").hex(), "UP (hook 00:02f0 calls 3fbb) -> 05 ezjr_scroll_up (wraps)")
     # the down hook's repaint: only a one-line shift is painted bottom-up, a wrap gets the full repaint

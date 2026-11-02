@@ -52,14 +52,20 @@ def prepare():
     kernel = build.mod_kernel()
     open(os.path.join(OUT, "gfxrowtable.bin"), "wb").write(kernel[0x2fbb:0x2fbb + 288])
     open(os.path.join(OUT, "rank_table.bin"), "wb").write(rank_table.table_bytes(rank_table.load(os.path.join(DV, "ranking.txt"))))
-    for origin, name in ((0x7962, "ezjr_scroll_7962.bin"), (0x1000, "scroll_test_1000.bin")):
+    # ShiftRows is bank5.asm's at $7680 in the real build, test_scroll.asm's recorder at $0F00 in the test ROM
+    for origin, name, shift in ((0x7962, "ezjr_scroll_7962.bin", 0x7680), (0x1000, "scroll_test_1000.bin", 0x0F00)):
         w = tempfile.mkdtemp(dir=OUT)
-        ihx, _ = compile_c(os.path.join(DV, "src", "ezjr_scroll.c"), w, pins=[], code_origin=origin)
+        ihx, _ = compile_c(os.path.join(DV, "src", "ezjr_scroll.c"), w, pins=[("_ShiftRows", shift)], code_origin=origin)
         mem = parse_ihx(ihx)
         open(os.path.join(OUT, name), "wb").write(bytes(mem.get(a, 0xFF) for a in range(min(mem), max(mem) + 1)))
         if origin == 0x1000:
-            noi = open(os.path.join(w, "out.noi")).read()
-            assert "_ezjr_scroll_up 0x10A6" in noi, "test_scroll.asm expects ezjr_scroll_up at $10A6"
+            syms = {}
+            for line in open(os.path.join(w, "out.noi")):
+                f = line.split()
+                if len(f) == 3 and f[0] == "DEF":
+                    syms[f[1]] = int(f[2], 16)
+            with open(os.path.join(OUT, "scroll_syms.inc"), "w") as f:
+                f.write(f"DEF Down EQU ${syms['_ezjr_scroll_down']:04X}\nDEF Up EQU ${syms['_ezjr_scroll_up']:04X}\n")
 
 
 def expect_top():
@@ -101,12 +107,16 @@ def t_ext():
 
 def t_scroll():
     m, _, _ = emulate(rom("test_scroll"))
-    want = [(2, 0, 1), (1, 1, 9), (1, 0, 0), (1, 29, 9), (1, 4, 0), (3, 5, 2), (1, 0, 0), (1, 0, 3)]
+    # (dirty, base, sel), and the ShiftRows call (dst_y, src_y, batches, step) or None: a one-row scroll
+    # moves list rows 1..8 (y 32..127) and leaves a two-row repaint, a wrap redraws the page
+    want = [((2, 0, 1), None), ((2, 1, 9), (20, 32, 24, 4)), ((1, 0, 0), None), ((1, 29, 9), None),
+            ((3, 4, 0), (136, 124, 24, 0xFC)), ((3, 5, 2), None), ((1, 0, 0), None), ((1, 0, 3), None)]
     names = ["down from top", "down on row 9", "down on last -> wrap", "up on first -> last", "up row 0 mid",
              "up mid page", "short: down on last", "short: up on first"]
     for k, (n, w) in enumerate(zip(names, want)):
-        g = (m[4 * k], m[4 * k + 1] | m[4 * k + 2] << 8, m[4 * k + 3])
-        yield g == w, f"scroll: {n:22} dirty={g[0]} base={g[1]} sel={g[2]} (want {w})"
+        r = m[8 * k:8 * k + 8]
+        g = ((r[0], r[1] | r[2] << 8, r[3]), tuple(r[4:8]) if r[7] or r[6] else None)
+        yield g == w, f"scroll: {n:22} dirty={g[0][0]} base={g[0][1]} sel={g[0][2]} shift={g[1]} (want {w})"
 
 
 def t_counter():

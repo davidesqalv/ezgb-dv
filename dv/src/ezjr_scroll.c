@@ -9,9 +9,25 @@
  * draw (browser_sort.c), so the old "stream another DirList batch" fallback is
  * gone. DOWN on the last entry goes to the top; UP on the first goes to the
  * last, with the window on the final page.
+ *
+ * A one-row scroll (the cursor on the bottom row going down, or the top row
+ * going up) used to set dirty 1 and redraw all ten rows, about 3 frames each
+ * in the 12px renderer. Eight of them only move: ShiftRows (bank5.asm) moves
+ * their pixels in VRAM, and the scroll is passed on as an ordinary row move
+ * (dirty 2 or 3), whose stock repaint draws just the two rows around the
+ * cursor and the counter: row 8 plain and the new row 9 highlighted going
+ * down, the new row 0 highlighted and row 1 plain going up. Wraps still
+ * redraw the page.
  */
 #define ROWS 10
 #define ENTRY_COUNT (*(volatile unsigned int *)0xc2a2)
+#define LIST_Y 20                   /* pixel y of list row 0 */
+#define ROW_H 12
+#define MOVED (8 * ROW_H / 4)       /* rows 1..8, in 4-pixel-row groups */
+#define UP_SRC_Y 124                /* going up, bottom first: the last group of rows 1..8 (y 32..127) */
+#define UP_DST_Y 136                /* ...and where it goes, ROW_H lower */
+
+extern void ShiftRows(unsigned char dst_y, unsigned char src_y, unsigned char batches, signed char step);  /* 05:7680 */
 
 struct BrowserScrollState {
     unsigned char dirty;            /* 0 none, 1 full page, 2 row-down, 3 row-up */
@@ -36,7 +52,8 @@ void ezjr_scroll_down(unsigned int p0, unsigned int p1, unsigned int p2, struct 
         return;
     }
     st->base = base + 1;
-    st->dirty = 1;
+    ShiftRows(LIST_Y, LIST_Y + ROW_H, MOVED, 4);                                    /* rows 1..8 -> 0..7 */
+    st->dirty = 2;
 }
 
 void ezjr_scroll_up(unsigned int p0, unsigned int p1, unsigned int p2, struct BrowserScrollState *st) {
@@ -51,7 +68,8 @@ void ezjr_scroll_up(unsigned int p0, unsigned int p1, unsigned int p2, struct Br
     }
     if (st->base != 0) {
         st->base = st->base - 1;
-        st->dirty = 1;
+        ShiftRows(UP_DST_Y, UP_SRC_Y, MOVED, -4);                                       /* rows 8..1 -> 9..2 */
+        st->dirty = 3;
         return;
     }
     n = ENTRY_COUNT;
