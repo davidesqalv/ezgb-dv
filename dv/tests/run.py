@@ -56,11 +56,11 @@ def prepare():
     with open(os.path.join(OUT, "hilite_bar.inc"), "w") as f:
         f.write("".join(f"DEF BAR_COL{c} EQU ${0x8000 + hilite_addrs(tab, 80)[c]:04X}\n" for c in (3, 7)))
     open(os.path.join(OUT, "rank_table.bin"), "wb").write(rank_table.table_bytes(rank_table.load(os.path.join(DV, "ranking.txt"))))
-    # ShiftRows is bank5.asm's at $7680 in the real build, test_scroll.asm's recorder at $0F00 in the test ROM;
-    # MoveHighlightStub is the far stub at 00:3e9c, test_scroll.asm's recorder at $0F40
-    for origin, name, shift, move in ((0x7962, "ezjr_scroll_7962.bin", 0x7680, 0x3E9C), (0x1000, "scroll_test_1000.bin", 0x0F00, 0x0F40)):
+    # RepaintRowsStub and MoveHighlightStub are the far stubs at 00:3eba and 00:3e9c in the real build,
+    # test_scroll.asm's recorders at $0F00 and $0F40 in the test ROM
+    for origin, name, rep, move in ((0x7962, "ezjr_scroll_7962.bin", 0x3EBA, 0x3E9C), (0x1000, "scroll_test_1000.bin", 0x0F00, 0x0F40)):
         w = tempfile.mkdtemp(dir=OUT)
-        ihx, _ = compile_c(os.path.join(DV, "src", "ezjr_scroll.c"), w, pins=[("_ShiftRows", shift), ("_MoveHighlightStub", move)],
+        ihx, _ = compile_c(os.path.join(DV, "src", "ezjr_scroll.c"), w, pins=[("_RepaintRowsStub", rep), ("_MoveHighlightStub", move)],
                            code_origin=origin)
         mem = parse_ihx(ihx)
         open(os.path.join(OUT, name), "wb").write(bytes(mem.get(a, 0xFF) for a in range(min(mem), max(mem) + 1)))
@@ -113,32 +113,39 @@ def t_ext():
 
 def t_scroll():
     m, _, _ = emulate(rom("test_scroll"))
-    # per case (test_scroll.asm): (dirty, base, sel), the ShiftRows call (dst_y, src_y, batches, step) or None,
-    # the MoveHighlight call's row or None, the marquee index after, and the repeat timer after.
-    # A one-row scroll moves list rows 1..8 (y 32..127) and leaves a two-row repaint; a move in the
-    # window goes to MoveHighlight, which here does what it does to the state (dirty 0) or declines,
-    # leaving the stock repaint; a wrap on a longer list redraws the page. Every move puts the marquee
-    # index back to $EEEE; a held key moves after 18 frames, then every 6.
+    # per case (test_scroll.asm): (dirty, base, sel), the RepaintRows call (k, up) or None, the
+    # MoveHighlight call's row or None, the marquee index after, the repeat timer and count after.
+    # A move in the window goes to MoveHighlight, which here does what it does to the state
+    # (dirty 0) or declines, leaving the stock repaint. A scroll or a wrap on a longer list goes to
+    # RepaintRows (k rows, 9 for a wrap), which moves the window itself, so base stays as it was here;
+    # a wrap sets base and sel first. A press scrolls by 1, a held key by 1 1 2 2 3 3 4 rows, never
+    # past either end. Every move puts the marquee index back to $EEEE; a held key moves after
+    # 18 frames, then after 6 6 5 5 4 4 3 frames.
     C, K = 0xEEEE, 0x1234
-    # (dirty, base, sel), shift, recolor row, marquee index, repeat timer, repeat count
     want = [((0, 0, 1), None, 1, C, 50, 0), ((2, 0, 1), None, 1, C, 50, 0),
-            ((2, 1, 9), (20, 32, 24, 4), None, C, 50, 0), ((1, 0, 0), None, None, C, 50, 0),
-            ((1, 29, 9), None, None, C, 50, 0), ((3, 4, 0), (136, 124, 24, 0xFC), None, C, 50, 0),
+            ((0, 0, 9), (1, 0), None, C, 50, 0), ((0, 0, 0), (9, 0), None, C, 50, 0),
+            ((0, 29, 9), (9, 1), None, C, 50, 0), ((0, 5, 0), (1, 1), None, C, 50, 0),
             ((0, 5, 2), None, 2, C, 50, 0), ((3, 5, 2), None, 2, C, 50, 0),
             ((0, 0, 0), None, 0, C, 50, 0), ((1, 0, 0), None, 0, C, 50, 0), ((0, 0, 3), None, 3, C, 50, 0),
             ((0, 0, 2), None, None, K, 50, 0), ((0, 0, 3), None, 3, C, 56, 1),
             ((0, 0, 1), None, 1, C, 0, 1), ((0, 0, 1), None, 1, C, 60, 0),
             ((0, 0, 3), None, 3, C, 56, 2), ((0, 0, 3), None, 3, C, 55, 3),
-            ((0, 0, 3), None, 3, C, 54, 6), ((0, 0, 3), None, 3, C, 53, 6)]
+            ((0, 0, 3), None, 3, C, 54, 6), ((0, 0, 3), None, 3, C, 53, 6),
+            ((0, 0, 9), (2, 0), None, C, 55, 3), ((0, 0, 9), (4, 0), None, C, 53, 6),
+            ((0, 27, 9), (2, 0), None, C, 53, 6), ((0, 28, 9), (1, 0), None, C, 53, 6),
+            ((0, 5, 0), (3, 1), None, C, 54, 5), ((0, 2, 0), (2, 1), None, C, 53, 6),
+            ((0, 1, 0), (1, 1), None, C, 53, 6)]
     names = ["down from top", "down, declined", "down on row 9", "down on last -> wrap", "up on first -> last",
              "up row 0 mid", "up mid page", "up, declined", "short: down on last", "short: down, declined",
              "short: up on first", "held 17 frames", "held 18 frames", "held 18, hFrame wraps", "other key down",
-             "2nd repeat: 6 frames", "3rd repeat: 5", "6th repeat: 4", "7th on: 3"]
+             "2nd repeat: 6 frames", "3rd repeat: 5", "6th repeat: 4", "7th on: 3",
+             "row 9, 3rd repeat: 2 rows", "row 9, 7th on: 4 rows", "row 9, 2 left: 2 rows", "row 9, 1 left: 1 row",
+             "row 0, 5th repeat: 3 up", "row 0, 2 above: 2 up", "row 0, 1 above: 1 up"]
     for k, (n, w) in enumerate(zip(names, want)):
         r = m[16 * k:16 * k + 16]
-        g = ((r[0], r[1] | r[2] << 8, r[3]), tuple(r[4:8]) if r[7] or r[6] else None, r[9] if r[8] else None,
+        g = ((r[0], r[1] | r[2] << 8, r[3]), (r[5], r[6]) if r[4] else None, r[9] if r[8] else None,
              r[10] | r[11] << 8, r[12], r[13])
-        yield g == w, (f"scroll: {n:22} dirty={g[0][0]} base={g[0][1]} sel={g[0][2]} shift={g[1]} recolor={g[2]} "
+        yield g == w, (f"scroll: {n:24} dirty={g[0][0]} base={g[0][1]} sel={g[0][2]} rows={g[1]} recolor={g[2]} "
                        f"marquee=${g[3]:04X} timer={g[4]} rep={g[5]}" + ("" if g == w else f" (want {w})"))
 
 

@@ -63,7 +63,7 @@ C_BLOCKS = {
                                           "RecolorIcon": 0x6d60, "wIntNest": 0xd6d0, "hClip12": 0xfff9, "hBarBlit": 0xfff3}),
     "browser_scroll_repaint.c": (0x3d8c, {"browser_scroll_down": 0x3ed0, "FarCallDrawDetailBottom": 0x03dc, "DrawString": 0x08b7,
                                           "StoreDrawParams": 0x2791, "DrawNameWithIcon": 0x3ec8}),
-    "ezjr_scroll.c":            (0x7962, {"ShiftRows": 0x7680, "MoveHighlightStub": 0x3e9c}),
+    "ezjr_scroll.c":            (0x7962, {"MoveHighlightStub": 0x3e9c, "RepaintRowsStub": 0x3eba}),
     "rom_menu.c":               (0x5a00, {"FarCallDrawString12": 0x05c0, "LastRomNameStub": 0x0368, "LastRomTickStub": 0x0370,
                                           "FarCallDrawLoadingBox": 0x0483, "ManageSaves": 0x6d11, "DrawRect": 0x27ba,
                                           "StoreDrawParams": 0x2791, "StarQueryStub": 0x3ee4, "StarToggleStub": 0x3eec,
@@ -73,6 +73,8 @@ C_BLOCKS = {
                                           "DrawRect": 0x27ba, "StoreDrawParams": 0x2791, "ReadJoypad": 0x3a4a,
                                           "SetText": 0x6400}),
     "move_highlight.c":         (None, {"HighlightRow": 0x7e02, "TabNum12": 0x0380}),   # origin and UnhighlightRow: bank2_hilite's map
+    "rows_repaint.c":           (0x7d60, {"ShiftRows": 0x7cd0, "StoreDrawParams": 0x2791, "DrawNameWithIcon": 0x3ec8,
+                                          "CounterDigitsStub": 0x3eb2, "TabNum12": 0x0380}),
     "auto_backup.c":            (0x7680, {"SmSaveOp": 0x6562, "RtcReadPage": 0x1a9a, "FarCallDrawString12": 0x05c0,
                                           "LastRomNameStub": 0x0368, "DrawRect": 0x27ba, "StoreDrawParams": 0x2791}),
 }
@@ -295,13 +297,21 @@ def build(data):
         raise SystemExit("bank 5 target is not free")
     r.d[o:off(5, hi5)] = b5[o:off(5, hi5)]
     r.log.append(f"05:{lo5:04x}  bank 5 block: scroll, TOP sort, play counts, stars ({hi5 - lo5} bytes)")
-    lo, hi = sym5["ShiftRows"], sym5["__end_vrammove__"]
-    assert lo == 0x7680 and hi <= 0x7700
-    o = off(5, lo)
-    if any(x != 0xFF for x in r.d[o:off(5, hi)]):
-        raise SystemExit("bank 5 ShiftRows target is not free")
-    r.d[o:off(5, hi)] = b5[o:off(5, hi)]
-    r.log.append(f"05:{lo:04x}  ShiftRows: a one-row scroll moves the drawn rows in VRAM ({hi - lo} bytes)")
+    # --- scrolls and long-list wraps: ShiftRows and RepaintRows in bank 4's free tail (asm/bank4_rows.asm,
+    #     rows_repaint.c), through RepaintRowsStub (00:3eba) ---
+    b4r, sym4r = assemble("bank4_rows")
+    lo, hi = sym4r["ShiftRows"], sym4r["__end_vrammove__"]
+    rr_lo = C_BLOCKS["rows_repaint.c"][0]
+    assert lo == 0x7cd0 and hi <= rr_lo
+    if any(x != 0xFF for x in r.d[off(4, 0x7cc2):off(4, 0x7fff) + 1]):
+        raise SystemExit("04:7cc2..7fff is not free")
+    r.d[off(4, lo):off(4, hi)] = b4r[off(4, lo):off(4, hi)]
+    r.log.append(f"04:{lo:04x}  ShiftRows: a scroll moves the rows that stay in VRAM ({hi - lo} bytes)")
+    rr, rr_syms = compile_block("rows_repaint.c")
+    if rr_syms["RepaintRows"] != rr_lo or rr_lo + len(rr) > 0x8000:
+        raise SystemExit(f"rows_repaint.c: {len(rr)} bytes at 04:{rr_lo:04x}, past the end of bank 4")
+    r.d[off(4, rr_lo):off(4, rr_lo) + len(rr)] = rr
+    r.log.append(f"04:{rr_lo:04x}  RepaintRows: rows a scroll or a wrap uncovers, the bar first ({len(rr)} bytes, {0x8000 - rr_lo - len(rr)} left)")
     r.patch(0, 0x3ed0, r.d[off(0, 0x3ed0):off(0, 0x3ed8)].hex(), (stub(scroll_syms["ezjr_scroll_down"], 5) + b"\xc9").hex(), "DOWN -> 05 ezjr_scroll_down (wraps)")
     r.patch(0, 0x3fbb, r.d[off(0, 0x3fbb):off(0, 0x3fc3)].hex(), (stub(scroll_syms["ezjr_scroll_up"], 5) + b"\xc9").hex(), "UP (hook 00:02f0 calls 3fbb) -> 05 ezjr_scroll_up (wraps)")
     # the down hook's repaint: only a one-line shift is painted bottom-up, a wrap gets the full repaint
@@ -373,10 +383,13 @@ def build(data):
     #     without the 32-bit conversion (asm/bank0_browser.asm, then CounterDigitsStub) ---
     b0, sym0 = assemble("bank0_browser")
     lo, hi = sym0["BrowserDelay"], sym0["__end__"]
-    cds = hi
-    assert lo == 0x3ea4 and cds + 8 <= 0x3ec8
-    r.patch(0, lo, "ff" * (cds + 8 - lo), (b0[lo:hi] + stub(symh["CounterDigits"], 2) + b"\xc9").hex(),
-            f"BrowserDelay ({hi - lo} bytes), CounterDigitsStub at 00:{cds:04x} -> 02 CounterDigits")
+    cds, rrs = hi, hi + 8
+    assert lo == 0x3ea4 and cds == C_BLOCKS["rows_repaint.c"][1]["CounterDigitsStub"]
+    assert rrs == C_BLOCKS["ezjr_scroll.c"][1]["RepaintRowsStub"] and rrs + 8 <= 0x3ec8
+    r.patch(0, lo, "ff" * (rrs + 8 - lo),
+            (b0[lo:hi] + stub(symh["CounterDigits"], 2) + b"\xc9" + stub(rr_lo, 4) + b"\xc9").hex(),
+            f"BrowserDelay ({hi - lo} bytes), CounterDigitsStub at 00:{cds:04x} -> 02 CounterDigits, "
+            f"RepaintRowsStub at 00:{rrs:04x} -> 04 RepaintRows")
     r.patch(0, 0x110f, "cd933a", "cd" + struct.pack("<H", lo).hex(), "browser loop: Delay(45) -> BrowserDelay")
     a = r.find_one(1, 0x4000, 0x8000, "cdf416e807f80a4d44211000e53e04f533c5cd8003", "DrawBrowserDetail's counter digits")
     r.patch(1, a, "cdf416", "cd" + struct.pack("<H", cds).hex(), "DrawBrowserDetail: U32ToAscii_B0 -> CounterDigitsStub")

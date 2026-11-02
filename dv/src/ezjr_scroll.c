@@ -10,13 +10,15 @@
  * gone. DOWN on the last entry goes to the top; UP on the first goes to the
  * last, with the window on the final page.
  *
- * A one-row scroll (the cursor on the bottom row going down, or the top row
- * going up) used to set dirty 1 and redraw all ten rows, about 3 frames each
- * in the 12px renderer. Eight of them only move: ShiftRows (bank5.asm) moves
- * their pixels in VRAM, and the scroll is passed on as an ordinary row move
- * (dirty 2 or 3), whose stock repaint draws just the two rows around the
- * cursor and the counter: row 8 plain and the new row 9 highlighted going
- * down, the new row 0 highlighted and row 1 plain going up.
+ * A scroll (the cursor on the bottom row going down, or the top row going
+ * up) used to set dirty 1 and redraw all ten rows. Now RepaintRows
+ * (rows_repaint.c, bank 4, through RepaintRowsStub at 00:3eba) moves the
+ * window, has ShiftRows move the pixels of the rows that stay in VRAM, and
+ * draws the rows it uncovers, the bar's row first, and the counter. A key held for a
+ * while scrolls by more rows at a time (step_rows: 1, 2, 3, then 4), each
+ * step costing a little more than one row does, so the list keeps pace with
+ * the cursor's speed inside the page instead of dropping to one row at a
+ * time when it reaches the edge.
  *
  * A move that keeps the window (a row down or up, or a wrap on a list that
  * fits one page) draws no text at all: MoveHighlight (move_highlight.c, bank
@@ -27,7 +29,7 @@
  * next to each other). Every move leaves all rows showing their names from
  * the start, so afterwards the marquee's last index goes back to its boot
  * value, which is how MoveHighlight tells. A wrap on a longer list shows ten
- * new entries and still redraws the page (dirty 1).
+ * new entries: RepaintRows draws all of them, starting with the bar's row.
  *
  * Key repeat. The browser reports a held D-pad key on every pass of its
  * loop, and the stock loop had no repeat delay of its own: a move simply
@@ -43,11 +45,6 @@
  */
 #define ROWS 10
 #define ENTRY_COUNT (*(volatile unsigned int *)0xc2a2)
-#define LIST_Y 20                   /* pixel y of list row 0 */
-#define ROW_H 12
-#define MOVED (8 * ROW_H / 4)       /* rows 1..8, in 4-pixel-row groups */
-#define UP_SRC_Y 124                /* going up, bottom first: the last group of rows 1..8 (y 32..127) */
-#define UP_DST_Y 136                /* ...and where it goes, ROW_H lower */
 #define MQ_LAST (*(volatile unsigned int *)0xcc31)   /* DrawDirEntryLabel's last drawn index */
 #define MQ_CLEAN 0xEEEE                              /* its boot value: nothing scrolled */
 __sfr __at(0xfff5) PAD_PREV;                           /* RomMenuPadTrack: the previous poll's report (HRAM, __sfr so that SDCC uses ldh) */
@@ -62,8 +59,6 @@ __sfr __at(0xfff4) REP_N;                              /* repeats since the pres
 #define RAMP_SHIFT   1                               /* 1 << RAMP_SHIFT repeats at each rate on the way */
 #define RAMP_N ((REPEAT_RATE - REPEAT_FAST) << RAMP_SHIFT)
 
-extern void ShiftRows(unsigned char dst_y, unsigned char src_y, unsigned char batches, signed char step);  /* 05:7680 */
-
 struct BrowserScrollState {
     unsigned char dirty;            /* 0 none, 1 full page, 2 row-down, 3 row-up */
     unsigned int base;              /* first visible entry */
@@ -71,6 +66,13 @@ struct BrowserScrollState {
 };
 
 extern unsigned char MoveHighlightStub(struct BrowserScrollState *st, unsigned char to);  /* 00:3e9c -> 02 MoveHighlight */
+extern void RepaintRowsStub(struct BrowserScrollState *st, unsigned char k, unsigned char up);  /* 00:3eba -> 04 RepaintRows */
+
+/* Rows to scroll by: 1 for a press, then 1 1 2 2 3 3 4 ... as the repeats
+ * go on (REP_N, counted by repeat_ok before the move). */
+static unsigned char step_rows(void) {
+    return (unsigned char)((REP_N >> RAMP_SHIFT) + 1);
+}
 
 /* The bar to row `to` of the same window: recolored, or the stock repaint. */
 static void move_in_page(struct BrowserScrollState *st, unsigned char to, unsigned char dirty) {
@@ -81,8 +83,8 @@ static void move_in_page(struct BrowserScrollState *st, unsigned char to, unsign
 }
 
 static void down(struct BrowserScrollState *st) {
-    unsigned int base = st->base;
-    unsigned char sel = st->sel;
+    unsigned int base = st->base, left;
+    unsigned char sel = st->sel, k;
 
     if (base + sel + 1 >= ENTRY_COUNT) {
         if (base == 0) {                /* the whole list is on the page */
@@ -91,20 +93,23 @@ static void down(struct BrowserScrollState *st) {
         }
         st->base = 0;
         st->sel = 0;
-        st->dirty = 1;
+        RepaintRowsStub(st, ROWS - 1, 0);                   /* all ten rows */
         return;
     }
     if (sel + 1 < ROWS) {
         move_in_page(st, sel + 1, 2);
         return;
     }
-    st->base = base + 1;
-    ShiftRows(LIST_Y, LIST_Y + ROW_H, MOVED, 4);                                    /* rows 1..8 -> 0..7 */
-    st->dirty = 2;
+    k = step_rows();
+    left = ENTRY_COUNT - base - ROWS;   /* entries below the window, at least 1 here */
+    if (k > left) {
+        k = (unsigned char)left;
+    }
+    RepaintRowsStub(st, k, 0);
 }
 
 static void up(struct BrowserScrollState *st) {
-    unsigned char sel = st->sel;
+    unsigned char sel = st->sel, k;
     unsigned int n;
 
     if (sel != 0) {
@@ -112,9 +117,11 @@ static void up(struct BrowserScrollState *st) {
         return;
     }
     if (st->base != 0) {
-        st->base = st->base - 1;
-        ShiftRows(UP_DST_Y, UP_SRC_Y, MOVED, -4);                                       /* rows 8..1 -> 9..2 */
-        st->dirty = 3;
+        k = step_rows();
+        if (k > st->base) {
+            k = (unsigned char)st->base;
+        }
+        RepaintRowsStub(st, k, 1);
         return;
     }
     n = ENTRY_COUNT;
@@ -127,7 +134,7 @@ static void up(struct BrowserScrollState *st) {
     }
     st->base = n - ROWS;
     st->sel = ROWS - 1;
-    st->dirty = 1;
+    RepaintRowsStub(st, ROWS - 1, 1);                       /* all ten rows */
 }
 
 /* 1 when this report of `key` should move: a press, or a key held for
