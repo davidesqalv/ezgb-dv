@@ -32,10 +32,14 @@ typedef unsigned int u16;
 
 extern void DrawString12(u16 pad_thunk, u16 pad_af, u16 pad_ret, const u8 *s, u8 len, u8 col, u8 row); /* 02:5800 */
 extern volatile u8 wDrawColor;                               /* $d734: ink (StoreDrawParams) */
+extern volatile u8 wDrawColorB;                              /* $d735: paper */
 extern void RecolorIcon(u8 py);                              /* 02:6d60 (asm/bank2_recolor.asm): icon -> ink 2 */
+extern volatile u8 wIntNest;                                 /* $d6d0: DiNest depth */
+extern volatile u8 hClip12;                                  /* $fff9: DrawString12's right edge, 0 = x 160 */
+extern volatile u8 hBarBlit;                                 /* $fff3: blit_col1 writes the bar's planes (asm/bank2_hilite.asm) */
 
 void DrawNameWithIcon(u16 far_pad_thunk, u16 far_pad_af, u16 far_pad_ret, const u8 *s, u8 len, u8 x, u8 y) {
-    u8 i, dot, n, e, c1, c2, ic, blue;
+    u8 i, dot, n, e, c1, c2, ic, blue, bar;
 
     (void)far_pad_thunk;
     (void)far_pad_af;
@@ -67,9 +71,22 @@ void DrawNameWithIcon(u16 far_pad_thunk, u16 far_pad_af, u16 far_pad_ret, const 
     }
     /* ezjr custom build (12px only): one pass for icon + name, as the mod
      * draws it; on a normal row (ink 3) the icon is then turned blue in VRAM
-     * (RecolorIcon, 12 plane-0 writes), much cheaper than a second pass. */
+     * (RecolorIcon, 12 plane-0 writes), much cheaper than a second pass.
+     * The selection bar (ink 0 on paper 1, the green the build patches in)
+     * goes through draw12.c's fast path as ink 3 on paper 0, with hBarBlit
+     * set so that its blit writes the bar's planes (BlitCol1Hook): the same
+     * pixels, without the per-pixel-row flush those colors need, and never
+     * plain on screen on the way. Only where the fast path is taken and
+     * nothing of the old row is kept: outside a DiNest section, and with no
+     * right edge set (the row is drawn from x 0, so the left keeps nothing). */
     (void)len;
     blue = wDrawColor == 3;
+    bar = wDrawColor == 0 && wDrawColorB == 1 && wIntNest == 0 && hClip12 == 0;
+    if (bar) {
+        wDrawColor = 3;
+        wDrawColorB = 0;
+        hBarBlit = 1;
+    }
     buf[0] = ic;
     for (i = 0; i < 39; i++) {
         buf[1 + i] = s[i];
@@ -79,7 +96,11 @@ void DrawNameWithIcon(u16 far_pad_thunk, u16 far_pad_af, u16 far_pad_ret, const 
     }
     buf[40] = 0;
     DrawString12(0, 0, 0, buf, 0, 0, y);
-    if (blue) {
+    if (bar) {
+        hBarBlit = 0;
+        wDrawColor = 0;
+        wDrawColorB = 1;
+    } else if (blue) {
         RecolorIcon((u8)(20 + 12 * (y - 2)));
     }
 }

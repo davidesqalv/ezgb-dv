@@ -51,11 +51,17 @@ def prepare():
     os.makedirs(OUT, exist_ok=True)
     kernel = build.mod_kernel()
     open(os.path.join(OUT, "gfxrowtable.bin"), "wb").write(kernel[0x2fbb:0x2fbb + 288])
+    open(os.path.join(OUT, "hilite_vram.bin"), "wb").write(hilite_pattern(kernel[0x2fbb:0x2fbb + 288]))
+    tab = kernel[0x2fbb:0x2fbb + 288]
+    with open(os.path.join(OUT, "hilite_bar.inc"), "w") as f:
+        f.write("".join(f"DEF BAR_COL{c} EQU ${0x8000 + hilite_addrs(tab, 80)[c]:04X}\n" for c in (3, 7)))
     open(os.path.join(OUT, "rank_table.bin"), "wb").write(rank_table.table_bytes(rank_table.load(os.path.join(DV, "ranking.txt"))))
-    # ShiftRows is bank5.asm's at $7680 in the real build, test_scroll.asm's recorder at $0F00 in the test ROM
-    for origin, name, shift in ((0x7962, "ezjr_scroll_7962.bin", 0x7680), (0x1000, "scroll_test_1000.bin", 0x0F00)):
+    # ShiftRows is bank5.asm's at $7680 in the real build, test_scroll.asm's recorder at $0F00 in the test ROM;
+    # MoveHighlightStub is the far stub at 00:3e9c, test_scroll.asm's recorder at $0F40
+    for origin, name, shift, move in ((0x7962, "ezjr_scroll_7962.bin", 0x7680, 0x3E9C), (0x1000, "scroll_test_1000.bin", 0x0F00, 0x0F40)):
         w = tempfile.mkdtemp(dir=OUT)
-        ihx, _ = compile_c(os.path.join(DV, "src", "ezjr_scroll.c"), w, pins=[("_ShiftRows", shift)], code_origin=origin)
+        ihx, _ = compile_c(os.path.join(DV, "src", "ezjr_scroll.c"), w, pins=[("_ShiftRows", shift), ("_MoveHighlightStub", move)],
+                           code_origin=origin)
         mem = parse_ihx(ihx)
         open(os.path.join(OUT, name), "wb").write(bytes(mem.get(a, 0xFF) for a in range(min(mem), max(mem) + 1)))
         if origin == 0x1000:
@@ -107,16 +113,29 @@ def t_ext():
 
 def t_scroll():
     m, _, _ = emulate(rom("test_scroll"))
-    # (dirty, base, sel), and the ShiftRows call (dst_y, src_y, batches, step) or None: a one-row scroll
-    # moves list rows 1..8 (y 32..127) and leaves a two-row repaint, a wrap redraws the page
-    want = [((2, 0, 1), None), ((2, 1, 9), (20, 32, 24, 4)), ((1, 0, 0), None), ((1, 29, 9), None),
-            ((3, 4, 0), (136, 124, 24, 0xFC)), ((3, 5, 2), None), ((1, 0, 0), None), ((1, 0, 3), None)]
-    names = ["down from top", "down on row 9", "down on last -> wrap", "up on first -> last", "up row 0 mid",
-             "up mid page", "short: down on last", "short: up on first"]
+    # per case (test_scroll.asm): (dirty, base, sel), the ShiftRows call (dst_y, src_y, batches, step) or None,
+    # the MoveHighlight call's row or None, the marquee index after, and the repeat timer after.
+    # A one-row scroll moves list rows 1..8 (y 32..127) and leaves a two-row repaint; a move in the
+    # window goes to MoveHighlight, which here does what it does to the state (dirty 0) or declines,
+    # leaving the stock repaint; a wrap on a longer list redraws the page. Every move puts the marquee
+    # index back to $EEEE; a held key moves after 18 frames, then every 6.
+    C, K = 0xEEEE, 0x1234
+    want = [((0, 0, 1), None, 1, C, 50), ((2, 0, 1), None, 1, C, 50),
+            ((2, 1, 9), (20, 32, 24, 4), None, C, 50), ((1, 0, 0), None, None, C, 50),
+            ((1, 29, 9), None, None, C, 50), ((3, 4, 0), (136, 124, 24, 0xFC), None, C, 50),
+            ((0, 5, 2), None, 2, C, 50), ((3, 5, 2), None, 2, C, 50),
+            ((0, 0, 0), None, 0, C, 50), ((1, 0, 0), None, 0, C, 50), ((0, 0, 3), None, 3, C, 50),
+            ((0, 0, 2), None, None, K, 50), ((0, 0, 3), None, 3, C, 56),
+            ((0, 0, 1), None, 1, C, 0), ((0, 0, 1), None, 1, C, 60)]
+    names = ["down from top", "down, declined", "down on row 9", "down on last -> wrap", "up on first -> last",
+             "up row 0 mid", "up mid page", "up, declined", "short: down on last", "short: down, declined",
+             "short: up on first", "held 17 frames", "held 18 frames", "held 18, hFrame wraps", "other key down"]
     for k, (n, w) in enumerate(zip(names, want)):
-        r = m[8 * k:8 * k + 8]
-        g = ((r[0], r[1] | r[2] << 8, r[3]), tuple(r[4:8]) if r[7] or r[6] else None)
-        yield g == w, f"scroll: {n:22} dirty={g[0][0]} base={g[0][1]} sel={g[0][2]} shift={g[1]} (want {w})"
+        r = m[16 * k:16 * k + 16]
+        g = ((r[0], r[1] | r[2] << 8, r[3]), tuple(r[4:8]) if r[7] or r[6] else None, r[9] if r[8] else None,
+             r[10] | r[11] << 8, r[12])
+        yield g == w, (f"scroll: {n:22} dirty={g[0][0]} base={g[0][1]} sel={g[0][2]} shift={g[1]} recolor={g[2]} "
+                       f"marquee=${g[3]:04X} timer={g[4]}" + ("" if g == w else f" (want {w})"))
 
 
 def t_counter():
@@ -163,6 +182,53 @@ def t_init():
     yield m[260:264] == b"EZJR", "first use: EZJR signature written"
 
 
+ICON_MASK = [0x00, 0x7F] + [0xFF] * 18     # plane 0 of a plain row: RecolorIcon's blue icon at x 0..8
+
+
+def hilite_addrs(tab, py):
+    """VRAM offsets (from $8000) of pixel row py's plane-0 byte in each of the 20 tile columns."""
+    return [(tab[2 * py] | tab[2 * py + 1] << 8) - 0x8000 + 16 * c for c in range(20)]
+
+
+def hilite_pattern(tab):
+    """Random VRAM, except list row 3 (y 56..67), shaped like a plain row."""
+    import random
+    rng = random.Random(12)
+    v = bytearray(rng.randrange(256) for _ in range(0x1800))
+    for py in range(56, 68):
+        for c, a in enumerate(hilite_addrs(tab, py)):
+            g = rng.randrange(256)
+            v[a], v[a + 1] = g & ICON_MASK[c], g
+    return bytes(v)
+
+
+def t_hilite():
+    m, vram, _ = emulate(rom("test_hilite", "-m", "0x01"))
+    tab = open(os.path.join(OUT, "gfxrowtable.bin"), "rb").read()
+    want = bytearray(open(os.path.join(OUT, "hilite_vram.bin"), "rb").read())
+    for py in range(32, 44):                          # plain -> bar: plane 0 = ~(p0 | p1), plane 1 = 0
+        for a in hilite_addrs(tab, py):
+            want[a], want[a + 1] = ~(want[a] | want[a + 1]) & 0xFF, 0
+    for py in range(44, 56):                          # bar -> plain: g = ~p0; plane 0 = g minus the icon, plane 1 = g
+        for c, a in enumerate(hilite_addrs(tab, py)):
+            g = ~want[a] & 0xFF
+            want[a], want[a + 1] = g & ICON_MASK[c], g
+    src = [0x00, 0xFF, 0x81, 0x7E, 0x3C, 0xC3, 0x18, 0xE7, 0x01, 0x80, 0x55, 0xAA]     # Src12
+    for c, xm in ((3, 0x00), (7, 0xFF)):              # BlitCol1Hook, hBarBlit set: plane 0 = bits ^ xm ^ $FF, plane 1 = 0
+        for r, py in enumerate(range(80, 92)):
+            a = hilite_addrs(tab, py)[c]
+            want[a], want[a + 1] = src[r] ^ xm ^ 0xFF, 0
+    rows = lambda lo, hi: [b for py in range(lo, hi) for a in hilite_addrs(tab, py) for b in (a, a + 1)]
+    yield m[0] == 0xAA and all(vram[a] == want[a] for a in rows(32, 44)), "HighlightRow: 12 rows x 20 columns, plane 0 = ~(p0 | p1), plane 1 = 0"
+    yield all(vram[a] == want[a] for a in rows(44, 56)), "UnhighlightRow: plane 0 = ~p0 minus the icon (x 0..8), plane 1 = ~p0"
+    yield all(vram[a] == want[a] for a in rows(56, 68)), "HighlightRow then UnhighlightRow: a plain row comes back byte for byte"
+    bar = [b for py in range(80, 92) for c in (3, 7) for b in (hilite_addrs(tab, py)[c], hilite_addrs(tab, py)[c] + 1)]
+    yield all(vram[a] == want[a] for a in bar), "BlitCol1Hook, hBarBlit set: 12 rows across a tile edge, plane 0 = bits ^ xm ^ $FF, plane 1 = 0"
+    rc, rhl, rsp = m[0x10], m[0x11] | m[0x12] << 8, m[0x13] | m[0x14] << 8
+    yield (rc, rhl) == (0x5A, rsp + 7), f"BlitCol1Hook, hBarBlit clear: on to blit_col1 with c = xm, hl = sp + 7 (c ${rc:02X}, hl - sp {rhl - rsp})"
+    yield all(vram[a] == want[a] for a in range(0x1800)), "HighlightRow / UnhighlightRow / BlitCol1Hook: nothing else in VRAM changed"
+
+
 def t_recolor():
     m, vram, nest = emulate(rom("test_recolor", "-m", "0x01"))
     tab = open(os.path.join(OUT, "gfxrowtable.bin"), "rb").read()
@@ -179,7 +245,7 @@ def t_recolor():
 def main():
     prepare()
     passed = failed = 0
-    for t in (t_ext, t_scroll, t_counter, t_top, t_star, t_init, t_recolor):
+    for t in (t_ext, t_scroll, t_counter, t_top, t_star, t_init, t_recolor, t_hilite):
         for ok, label in t():
             print(("ok  " if ok else "FAIL"), label)
             passed += ok

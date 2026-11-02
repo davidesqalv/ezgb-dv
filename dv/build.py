@@ -58,10 +58,11 @@ def mod_kernel():
 
 # dv/src/<file>: (code origin, symbols pinned to kernel addresses)
 C_BLOCKS = {
-    "browser_icons.c":          (0x6b80, {"DrawString12": 0x7500, "wDrawColor": 0xd734, "RecolorIcon": 0x6d60}),
+    "browser_icons.c":          (0x6b80, {"DrawString12": 0x7500, "wDrawColor": 0xd734, "wDrawColorB": 0xd735,
+                                          "RecolorIcon": 0x6d60, "wIntNest": 0xd6d0, "hClip12": 0xfff9, "hBarBlit": 0xfff3}),
     "browser_scroll_repaint.c": (0x3d8c, {"browser_scroll_down": 0x3ed0, "FarCallDrawDetailBottom": 0x03dc, "DrawString": 0x08b7,
                                           "StoreDrawParams": 0x2791, "DrawNameWithIcon": 0x3ec8}),
-    "ezjr_scroll.c":            (0x7962, {"ShiftRows": 0x7680}),
+    "ezjr_scroll.c":            (0x7962, {"ShiftRows": 0x7680, "MoveHighlightStub": 0x3e9c}),
     "rom_menu.c":               (0x5a00, {"FarCallDrawString12": 0x05c0, "LastRomNameStub": 0x0368, "LastRomTickStub": 0x0370,
                                           "FarCallDrawLoadingBox": 0x0483, "ManageSaves": 0x6d11, "DrawRect": 0x27ba,
                                           "StoreDrawParams": 0x2791, "StarQueryStub": 0x3ee4, "StarToggleStub": 0x3eec,
@@ -70,6 +71,7 @@ C_BLOCKS = {
     "flcfg.c":                  (0x6600, {"FarCallEzCfg": 0x5f00, "SetFpgaPage_B4": 0x466e, "DrawString": 0x08b7,
                                           "DrawRect": 0x27ba, "StoreDrawParams": 0x2791, "ReadJoypad": 0x3a4a,
                                           "SetText": 0x6400}),
+    "move_highlight.c":         (None, {"HighlightRow": 0x7e02, "TabNum12": 0x0380}),   # origin and UnhighlightRow: bank2_hilite's map
     "auto_backup.c":            (0x7680, {"SmSaveOp": 0x6562, "RtcReadPage": 0x1a9a, "FarCallDrawString12": 0x05c0,
                                           "LastRomNameStub": 0x0368, "DrawRect": 0x27ba, "StoreDrawParams": 0x2791}),
 }
@@ -258,6 +260,32 @@ def build(data):
     r.log.append(f"02:6b80  DrawNameWithIcon: one pass + RecolorIcon ({len(code)} bytes)")
     r.patch(0, 0x3ec8, "cd8d07807e0200c9", "cd8d07806b0200c9", "row-draw stub -> 02:6b80")
 
+    # --- the selection bar as a VRAM recolor (asm/bank2_hilite.asm at 02:7e02, move_highlight.c right
+    #     after it, through MoveHighlightStub at 00:3e9c), over upstream's browser_icons.c at 02:7e80,
+    #     which nothing calls since the stub above moved to 02:6b80; and drawn in one pass (BlitCol1Hook
+    #     at 02:7480, in the gap between the mod's LastRomName and DrawString12) ---
+    hb, symh = assemble("bank2_hilite")
+    assert symh["HighlightRow"] == 0x7e02 and symh["BlitCol1Hook"] == 0x7480
+    if any(x != 0xFF for x in r.d[off(2, 0x7e02):off(2, 0x7e80)]):
+        raise SystemExit("02:7e02 is not free")
+    r.d[off(2, 0x7e02):off(2, 0x7e02) + 0x1fe] = b"\xff" * 0x1fe                       # 02:7e02..7fff
+    he = symh["__end_hilite__"]
+    r.d[off(2, 0x7e02):off(2, he)] = hb[off(2, 0x7e02):off(2, he)]
+    r.log.append(f"02:7e02  HighlightRow / UnhighlightRow: the selection bar as a VRAM recolor ({he - 0x7e02} bytes)")
+    be = symh["__end_barblit__"]
+    if be > 0x7500 or any(x != 0xFF for x in r.d[off(2, 0x7480):off(2, 0x7500)]):
+        raise SystemExit("02:7480..74ff is not free")
+    r.d[off(2, 0x7480):off(2, be)] = hb[off(2, 0x7480):off(2, be)]
+    r.log.append(f"02:7480  BlitCol1Hook: the bar row in one pass ({be - 0x7480} bytes)")
+    r.patch(2, 0x7d89, "f8074e", "c38074", "blit_col1 -> BlitCol1Hook")
+    mo = he
+    C_BLOCKS["move_highlight.c"] = (mo, dict(C_BLOCKS["move_highlight.c"][1], UnhighlightRow=symh["UnhighlightRow"]))
+    mh, msyms = compile_block("move_highlight.c")
+    if msyms["MoveHighlight"] != mo or mo + len(mh) > 0x8000:
+        raise SystemExit(f"move_highlight.c: {len(mh)} bytes at 02:{mo:04x}, past the end of bank 2")
+    r.d[off(2, mo):off(2, mo) + len(mh)] = mh
+    r.log.append(f"02:{mo:04x}  MoveHighlight: a move within the page recolors two rows ({len(mh)} bytes, {0x8000 - mo - len(mh)} left)")
+
     # --- wrap-around, n/total counter, SORT TOP + play counts, stars ---
     lo5, hi5 = 0x7962, sym5["__end__"]
     o = off(5, lo5)
@@ -330,6 +358,7 @@ def build(data):
     r.log.append(f"04:7680  AutoBackup: back the save up on the day's first dump, one kept ({len(ab)} bytes)")
     abstub = b"\xc5" + stub(0x7680, 4) + bytes.fromhex("3e00f533c3210f")    # push bc; AutoBackup; then the hook's own tail
     r.patch(0, 0x3e8d, "ff" * len(abstub), abstub.hex(), "AutoBackupStub")
+    r.patch(0, 0x3e9c, "ff" * 8, (stub(mo, 2) + b"\xc9").hex(), "MoveHighlightStub -> 02 MoveHighlight")   # after the cave's own code is in
     r.patch(0, 0x03bf, "c53e00f533c3210f", "c38d3effffffffff", "SaveStampHook: after the stamp check -> AutoBackupStub")
 
     # --- FW5 fast load only on the Chromatic (asm/detect.asm) ---

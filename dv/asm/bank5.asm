@@ -1,7 +1,7 @@
 ; Bank 5 additions for the ezjr custom build (free space after FatFs).
 ;   05:7680  ShiftRows: move drawn list rows in VRAM for a one-row scroll
 ;   05:7962  ezjr_scroll_down / ezjr_scroll_up (C, ezjr_scroll_7962.bin, INCBIN'd)
-;   05:7b00  TabNumFar: the list position as "n/total" in green, right-aligned
+;   05:7b9f  TabNumFar: the list position as "n/total" in green, right-aligned
 ;            (TabNum12 at 00:0380 becomes a far stub to it)
 
 DEF FarCallDrawString12 EQU $05c0
@@ -118,7 +118,7 @@ ShiftRows::
 SECTION "scroll", ROMX[$7962], BANK[5]
     INCBIN "ezjr_scroll_7962.bin"
 
-SECTION "tabnum", ROMX[$7B00], BANK[5]
+SECTION "tabnum", ROMX[$7B9F], BANK[5]
 ; Called through a far stub with DrawString's frame: three pads, then
 ; s (u16, the stock "n" digits), len, x, y. Draws "  n/total" in ink 1.
 TabNumFar::
@@ -280,7 +280,7 @@ DEF F_VALID     EQU $80
 DEF F_STAR      EQU $01
 DEF PLAY_POINTS EQU 12
 
-SECTION "top", ROMX[$7BB0], BANK[5]
+SECTION "top", ROMX[$7C43], BANK[5]
 
 ; Hash: de = NUL-terminated name in the current window/WRAM -> hl = 16-bit
 ; djb2 of the uppercased bytes. Clobbers a, bc, de.
@@ -662,9 +662,9 @@ SetFpgaPage:
 DEF NAME_BUF   EQU $C4A4
 DEF STAR_MARK  EQU $5A
 
-SECTION "rowaddr", ROMX[$7E00], BANK[5]
+SECTION "rowaddr", ROMX[$7E1D], BANK[5]
 ; a = pixel row -> hl = its VRAM address in tile column 0. Clobbers bc.
-; ShiftRows' helper, in the gap before the stars block.
+; ShiftRows' helper, between the TOP block and the stars.
 RowAddr:
     ld l, a
     ld h, 0
@@ -676,7 +676,7 @@ RowAddr:
     ld l, a
     ret
 
-SECTION "stars", ROMX[$7E10], BANK[5]
+SECTION "stars", ROMX[$7E29], BANK[5]
 StarQuery::
     ld de, NAME_BUF
     call Hash

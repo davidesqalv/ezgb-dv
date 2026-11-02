@@ -1,5 +1,11 @@
-; Cases: count, base, sel, which(0 down / 1 up) -> stores dirty, base lo, base hi, sel,
-; then the arguments of the case's ShiftRows call (dst_y, src_y, batches, step), zeros without one
+; ezjr_scroll_down / ezjr_scroll_up (ezjr_scroll.c) case by case.
+; A case is 8 bytes: count, base, sel, which (0 down / 1 up), the previous
+; poll's pad report ($fff5), hFrame ($fffa), the repeat timer ($fff2), and
+; what the MoveHighlight stand-in answers (1 done, 0 declined).
+; Each case leaves 16 bytes in wOut: dirty, base lo, base hi, sel, the
+; ShiftRows call (dst_y, src_y, batches, step; zeros without one), the
+; MoveHighlight call (called, to), the marquee index at $cc31/$cc32 (set to
+; $1234 before the case), the repeat timer after, and 3 spare.
 INCLUDE "scroll_syms.inc"           ; Down, Up: run.py, from the compiler's symbols
 SECTION "code", ROM0[$1000]
 ScrollCode: INCBIN "scroll_test_1000.bin"
@@ -17,6 +23,35 @@ ShiftRecorder:
     ENDR
     ret
 
+SECTION "move", ROM0[$0F40]
+; MoveHighlightStub stand-in: MoveHighlight(st, to), sdcccall 0, st at sp+2,
+; to at sp+4. Records the call; when wMoveRet is 1, does what MoveHighlight
+; does to the state (sel = to, dirty 0) and returns 1 in E, else returns 0.
+MoveRecorder:
+    ld hl, sp+4
+    ld a, [hl]
+    ld [wMove + 1], a               ; to
+    ld a, 1
+    ld [wMove], a                   ; called
+    ld a, [wMoveRet]
+    and a
+    jr z, .no
+    ld hl, sp+2
+    ld a, [hl+]
+    ld h, [hl]
+    ld l, a                         ; st
+    xor a
+    ld [hl+], a                     ; dirty
+    inc hl
+    inc hl
+    ld a, [wMove + 1]
+    ld [hl], a                      ; sel
+    ld e, 1
+    ret
+.no:
+    ld e, 0
+    ret
+
 SECTION "hdr", ROM0[$100]
     nop
     jp Main
@@ -30,23 +65,36 @@ Main:
 .next:
     ld a, [hl+]
     cp $FF
-    jr z, .done
+    jp z, .done
     ld [$C2A2], a            ; ENTRY_COUNT lo
     xor a
     ld [$C2A3], a
-    ld a, [hl+]
-    ld [wSt + 1], a          ; base lo
-    xor a
-    ld [wSt + 2], a
     ld [wSt], a              ; dirty
-    ld a, [hl+]
-    ld [wSt + 3], a          ; sel
-    xor a
+    ld [wSt + 2], a          ; base hi
     ld [wShift], a
     ld [wShift + 1], a
     ld [wShift + 2], a
     ld [wShift + 3], a
+    ld [wMove], a
+    ld [wMove + 1], a
     ld a, [hl+]
+    ld [wSt + 1], a          ; base lo
+    ld a, [hl+]
+    ld [wSt + 3], a          ; sel
+    ld a, [hl+]
+    ld b, a                  ; which
+    ld a, [hl+]
+    ldh [$FFF5], a           ; previous poll's report
+    ld a, [hl+]
+    ldh [$FFFA], a           ; hFrame
+    ld a, [hl+]
+    ldh [$FFF2], a           ; repeat timer
+    ld a, [hl+]
+    ld [wMoveRet], a
+    ld a, $34
+    ld [$CC31], a
+    ld a, $12
+    ld [$CC32], a
     push hl
     push de
     ld hl, wSt
@@ -55,6 +103,7 @@ Main:
     push hl
     push hl
     push hl                  ; three pads
+    ld a, b
     and a
     jr nz, .up
     call Down
@@ -65,30 +114,51 @@ Main:
     add sp, 8
     pop de
     ld hl, wSt
-    REPT 8                   ; wSt, then wShift right after it
+    REPT 10                  ; wSt (4), wShift (4), wMove (2)
     ld a, [hl+]
     ld [de], a
     inc de
     ENDR
+    ld a, [$CC31]
+    ld [de], a
+    inc de
+    ld a, [$CC32]
+    ld [de], a
+    inc de
+    ldh a, [$FFF2]
+    ld [de], a
+    inc de
+    inc de
+    inc de
+    inc de                   ; 16 per case
     pop hl
-    jr .next
+    jp .next
 .done:
     ld a, $AA
     ld [wDone], a
 .h: jr .h
 Cases:
-    ; count, base, sel, which
-    db 39, 0, 0, 0           ; down from top: sel 1, dirty 2
-    db 39, 0, 9, 0           ; down on row 9: base 1, rows moved, dirty 2
-    db 39, 29, 9, 0          ; down on last (29+9=38): wrap to 0,0
-    db 39, 0, 0, 1           ; up on first: base 29, sel 9
-    db 39, 5, 0, 1           ; up on row 0 mid: base 4, rows moved, dirty 3
-    db 39, 5, 3, 1           ; up mid page: sel 2, dirty 3
-    db 4, 0, 3, 0            ; short list, down on last: wrap
-    db 4, 0, 0, 1            ; short list, up on first: sel 3
+    ;  count base sel which prev  frame timer ret
+    db 39,   0,   0,  0,    $00,  50,   0,    1    ; down from the top: recolored to row 1
+    db 39,   0,   0,  0,    $00,  50,   0,    0    ; ...declined: the stock row-down repaint
+    db 39,   0,   9,  0,    $00,  50,   0,    1    ; down on row 9: rows moved, dirty 2
+    db 39,  29,   9,  0,    $00,  50,   0,    1    ; down on the last (29+9=38): page wrap to 0,0
+    db 39,   0,   0,  1,    $00,  50,   0,    1    ; up on the first: page wrap to base 29, sel 9
+    db 39,   5,   0,  1,    $00,  50,   0,    1    ; up on row 0 mid: rows moved, dirty 3
+    db 39,   5,   3,  1,    $00,  50,   0,    1    ; up mid page: recolored to row 2
+    db 39,   5,   3,  1,    $00,  50,   0,    0    ; ...declined: the stock row-up repaint
+    db 4,    0,   3,  0,    $00,  50,   0,    1    ; short list, down on the last: recolored to row 0
+    db 4,    0,   3,  0,    $00,  50,   0,    0    ; ...declined: the page repaint
+    db 4,    0,   0,  1,    $00,  50,   0,    1    ; short list, up on the first: recolored to row 3
+    db 39,   0,   2,  0,    $08,  67,  50,    1    ; DOWN held for 17 frames: no move yet
+    db 39,   0,   2,  0,    $08,  68,  50,    1    ; DOWN held for 18: repeats, timer to 68 - 12
+    db 39,   0,   2,  1,    $04,  12, 250,    1    ; UP held for 18 across hFrame's wrap: repeats
+    db 39,   0,   2,  1,    $08,  60,  55,    1    ; UP pressed while DOWN was down: a press, moves
     db $FF
 SECTION "vars", WRAM0[$C000]
-wOut: ds 64
+wOut: ds 256
 wSt: ds 4
 wShift: ds 4
+wMove: ds 2
+wMoveRet: ds 1
 wDone: ds 1
