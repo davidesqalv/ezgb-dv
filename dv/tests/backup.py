@@ -83,9 +83,10 @@ def card(saves):
     return work
 
 
-def cart_ram(work, save, pending=True):
+def cart_ram(work, save, pending=True, backup_on=None):
     """The battery pSRAM beside card.img: Test.gb's 8 KB save on page $00 and,
-    on page $11, the stamp a launch leaves (docs/psram-save-map.md)."""
+    on page $11, the stamp a launch leaves (docs/psram-save-map.md) and, when
+    backup_on is given, the SET tab's DAILY BACKUP record at $B108."""
     ps = bytearray(b"\xff" * (64 * BANK))
     meta, path = 0x11 * BANK, b"/SAVER/Test.sav"
     ps[meta] = 0xAA if pending else 0x00            # backup pending
@@ -94,6 +95,8 @@ def cart_ram(work, save, pending=True):
     ps[meta + 0x010:meta + 0x010 + len(path)] = path
     ps[meta + 0x200] = 1                            # AUTO SAVE
     ps[meta + 0x201] = 0x88                         # battery canary
+    if backup_on is not None:
+        ps[meta + 0x1108:meta + 0x110C] = bytes((ord("B"), ord("K"), backup_on, backup_on ^ 0xFF))
     ps[:len(save)] = save
     open(os.path.join(work, "psram.bin"), "wb").write(ps)
 
@@ -166,7 +169,17 @@ def main():
     check(w, "other games' saves are left alone",
           [("BK", "A"), ("Other 2026-10-01 12-00.sav", "C"), ("Other.sav", "B"), ("Test.sav", "D")])
 
-    print(f"\n{7 - failures} passed, {failures} failed")
+    w = card({"Test.sav": (A, YESTERDAY)})
+    cart_ram(w, B, backup_on=0)
+    boot(tool, w)
+    check(w, "DAILY BACKUP unticked: no backup", [("Test.sav", "B")])
+
+    w = card({"Test.sav": (A, YESTERDAY)})
+    cart_ram(w, B, backup_on=1)
+    boot(tool, w)
+    check(w, "DAILY BACKUP ticked: backed up", [("BK", "A"), ("Test.sav", "B")])
+
+    print(f"\n{9 - failures} passed, {failures} failed")
     sys.exit(1 if failures else 0)
 
 

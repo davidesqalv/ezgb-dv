@@ -29,7 +29,11 @@ games from an SD card. It's based on [lukesau's ezgb](https://github.com/lukesau
   game was played, the menu copies that game's save to a backup before
   writing the new one over it, with a box that says which game and about how
   long it takes. If a save goes bad (low batteries, for example), Manage
-  saves can put back the copy from before that day. Each game keeps one.
+  saves can put back the copy from before that day. Each game keeps one, and
+  it can be turned off on the SET tab.
+- **Settings:** the SET tab lists the clock first, then the save options,
+  sorting and fast launch, with a small left margin. The 8px/12px switch is
+  gone, since the menu is always 12px.
 
 ## How it's built
 
@@ -56,7 +60,7 @@ features (mod 6.9). ezgb-dv builds on that version:
   original Game Boy also returns 0, so the menu first checks for a register
   that only exists on Game Boy Color hardware.
 - **Testing.** 51 automated tests run each new piece of code in the PyBoy
-  emulator. 7 more boot the whole menu in the SameBoy emulator with a test SD
+  emulator. 9 more boot the whole menu in the SameBoy emulator with a test SD
   card and check what the save backup leaves on it. The screenshots come from
   a script that runs the menu in SameBoy and presses the buttons.
 

@@ -66,6 +66,10 @@ C_BLOCKS = {
                                           "FarCallDrawLoadingBox": 0x0483, "ManageSaves": 0x6d11, "DrawRect": 0x27ba,
                                           "StoreDrawParams": 0x2791, "StarQueryStub": 0x3ee4, "StarToggleStub": 0x3eec,
                                           "ResortStub": 0x3ef4}),
+    "settext.c":                (0x6400, {"FarCallDrawString12": 0x05c0, "hClip12": 0xfff9}),
+    "flcfg.c":                  (0x6600, {"FarCallEzCfg": 0x5f00, "SetFpgaPage_B4": 0x466e, "DrawString": 0x08b7,
+                                          "DrawRect": 0x27ba, "StoreDrawParams": 0x2791, "ReadJoypad": 0x3a4a,
+                                          "SetText": 0x6400}),
     "auto_backup.c":            (0x7680, {"SmSaveOp": 0x6562, "RtcReadPage": 0x1a9a, "FarCallDrawString12": 0x05c0,
                                           "LastRomNameStub": 0x0368, "DrawRect": 0x27ba, "StoreDrawParams": 0x2791}),
 }
@@ -299,11 +303,15 @@ def build(data):
     assert len(rm) <= 0x4cb
     o = off(4, 0x5a00); r.d[o:o + 0x4cb] = rm + b"\xff" * (0x4cb - len(rm))
     r.log.append(f"04:5a00  RomMenu: Start / Manage saves / Star ({len(rm)} bytes)")
-    # SET tab: the SGB BOOT row becomes SORT A-Z, its record moved to page $11 $B100
-    for a, op in [(0x689e, "fa00a4"), (0x68a5, "fa01a4"), (0x68ac, "2102a4"), (0x68b3, "fa03a4"),
-                  (0x68dd, "2100a4"), (0x68e6, "1102a4"), (0x68ef, "ea03a4")]:
-        r.patch(4, a, op, op[:4] + "b1", "SET row record $A40x -> $B10x")
-    r.patch(4, 0x699c, b"SGB BOOT:".hex(), b"SORT A-Z:".hex(), "SET row label SORT A-Z")
+    # SET tab (flcfg.c and settext.c copies, in their own slots): AUTO SAVE, DAILY BACKUP, SORT A-Z
+    # (the SGB BOOT row, its record at page $11 $B100), FAST LAUNCH, PICK ROM; no UI row; a 2 px margin
+    for src, end in (("settext.c", 0x6562), ("flcfg.c", 0x6d11)):
+        code, syms = compile_block(src)
+        origin = C_BLOCKS[src][0]
+        if origin + len(code) > end:
+            raise SystemExit(f"{src}: {len(code)} bytes, its slot holds {end - origin}")
+        o = off(4, origin); r.d[o:off(4, end)] = code + b"\xff" * (end - origin - len(code))
+        r.log.append(f"04:{origin:04x}  {src}: SET tab rows reordered, DAILY BACKUP, left margin ({len(code)} of {end - origin} bytes)")
 
     # --- one backup per game of the save from before the day's first session (auto_backup.c at 04:7680) ---
     ab, ab_syms = compile_block("auto_backup.c")

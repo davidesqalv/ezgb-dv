@@ -25,6 +25,10 @@
  *   12px  box (0,36)-(159,143); title y 40, name band y 53..69, three
  *         lines at y 72, 84, 96, rule y 123, time y 128, all from x 12
  *
+ * The SET tab's DAILY BACKUP box (flcfg.c's copy) turns it off: a record on
+ * pSRAM page $11 at $B108 ('B', 'K', 0, $FF); anything else, as on a fresh
+ * cart, leaves it on.
+ *
  * The file work is the save manager's SaveOp (01:7670, through SmSaveOp at
  * 04:6562), which takes the ROM's name from $c4a4; "<base>.sav" there gives
  * the same <base>. Between here and the browser nothing reads $c4a4, the
@@ -50,6 +54,7 @@ extern void StoreDrawParams(u8 ink, u8 paper, u8 op);               /* 00:2791 *
 #define BLEN      (*(volatile u8 *)0xD778)  /* length of <base> */
 #define SAVE_SIZE (*(volatile u8 *)0xA001)  /* page $11: the stamp's save size in 8 KB banks */
 #define LR_GEO    (*(volatile u8 *)0xDB3F)  /* LastRomName: 1 = the BACKUPSAVE box's name band */
+#define BACKUP_REC ((const volatile u8 *)0xB108)  /* page $11: DAILY BACKUP, 'B', 'K', flag, ~flag */
 
 #define SO_SCAN   0
 #define SO_BACKUP 1
@@ -64,6 +69,7 @@ extern void StoreDrawParams(u8 ink, u8 paper, u8 op);               /* 00:2791 *
 #define INK_GREEN 1
 #define INK_WHITE 3
 
+static u8 switched_off(void);
 static u8 written_today(void);
 static void draw_box(void);
 static void clear_box(void);
@@ -75,6 +81,7 @@ void AutoBackup(void) {
     const u8 *s = SAVE_PATH + 7;
     u8 i;
 
+    if (switched_off()) return;
     for (i = 0; s[i] && i < NAME_MAX; i++) NAME_BUF[i] = s[i];
     NAME_BUF[i] = 0;
     SmSaveOp(SO_SCAN << 8);
@@ -152,6 +159,13 @@ static void text(const u8 *s, u8 y) {
     buf[i] = 0;
     StoreDrawParams(INK_WHITE, INK_BLACK, 0);
     FarCallDrawString12(buf, 0, 1, y);
+}
+
+/* 1 when DAILY BACKUP is unticked. Leaves page $11 in the window, as
+ * AutoBackup's own exit does. */
+static u8 switched_off(void) {
+    SmSaveOp((SO_DONE << 8) | META_PAGE);
+    return BACKUP_REC[0] == 'B' && BACKUP_REC[1] == 'K' && BACKUP_REC[2] == 0 && BACKUP_REC[3] == 0xFF;
 }
 
 /* 1 when the live save's FAT date is the cart clock's today. */
