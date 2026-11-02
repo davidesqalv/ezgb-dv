@@ -5,7 +5,8 @@
 ; and BlitCol1Hook (blit_col1's frame: src, addr, n, xm) with hBarBlit set:
 ;   Src12 into list row 5 (y 80), tile column 3 with xm 0 and column 7 with xm $FF;
 ; then with hBarBlit clear, which goes on to blit_col1 + 3 (a recorder here:
-; c, hl and sp to wRec).
+; c, hl and sp to wRec); and Digits4 for 0, 7, 39, 416, 1000, 9999 (wDig, 5
+; bytes each), CounterDigits in the far stub's frame for 39 and 416 (wCD).
 INCLUDE "bank2_hilite.asm"
 SECTION "rowtab", ROM0[$2FBB]
     INCBIN "gfxrowtable.bin"
@@ -29,6 +30,10 @@ BlitRec:
     ret
 SECTION "rec_ram", WRAM0[$C010]
 wRec: ds 5
+SECTION "dig_ram", WRAM0[$C020]
+wDig: ds 30
+SECTION "cd_ram", WRAM0[$C040]
+wCD: ds 10
 SECTION "pattern", ROMX[$4000], BANK[1]
 Pattern: INCBIN "hilite_vram.bin"          ; $1800 bytes for $8000-$97FF
 SECTION "hdr", ROM0[$100]
@@ -83,9 +88,53 @@ Main:
     ld de, $5A0C                    ; xm $5A: on to blit_col1
     ld bc, BAR_COL3
     call .blit
+    ld hl, .digcases
+    ld de, wDig
+.dig:
+    ld a, [hl+]
+    ld c, a
+    ld a, [hl+]
+    ld b, a                         ; bc = n
+    cp $FF
+    jr z, .digdone
+    push hl
+    push de
+    push de                         ; buf
+    push bc                         ; n
+    call Digits4
+    add sp, 4
+    pop de
+    ld hl, 5
+    add hl, de
+    ld d, h
+    ld e, l
+    pop hl
+    jr .dig
+.digdone:
+    ld bc, 39
+    ld de, wCD
+    call .cd
+    ld bc, 416
+    ld de, wCD + 5
+    call .cd
     ld a, $AA
     ld [$C000], a
 .h: jr .h
+.cd:                                ; CounterDigits(3 pads, u32 bc, de, radix 10)
+    ld hl, 10
+    push hl                         ; radix
+    push de                         ; buf
+    ld hl, 0
+    push hl                         ; v, high half
+    push bc                         ; v, low half
+    push hl
+    push hl
+    push hl                         ; three pads
+    call CounterDigits
+    add sp, 14
+    ret
+.digcases
+    dw 0, 7, 39, 416, 1000, 9999, $FFFF
 .blit:                              ; BlitCol1Hook(Src12, bc, e, d)
     push de
     push bc

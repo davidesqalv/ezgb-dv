@@ -153,6 +153,62 @@ VramSync::
     jr nz, .w0
     ret
 
+; Digits4(u16 n, u8 *buf), sdcccall 0: n < 10000 as 4 digits and a NUL, for
+; TabNumFar, which reads up to 4 digits back as a number (move_highlight.c).
+Digits4::
+    ld hl, sp+4
+    ld e, [hl]
+    inc hl
+    ld d, [hl]                      ; de = buf
+    ld hl, sp+2
+    ld a, [hl+]
+    ld h, [hl]
+    ld l, a                         ; hl = n
+DigitsHLDE:
+    ld bc, -1000
+    call .digit
+    ld bc, -100
+    call .digit
+    ld bc, -10
+    call .digit
+    ld a, l
+    add "0"
+    ld [de], a
+    inc de
+    xor a
+    ld [de], a
+    ret
+.digit                              ; [de++] = "0" + hl / -bc, hl = hl % -bc
+    ld a, "0" - 1
+.sub
+    inc a
+    add hl, bc                      ; carry while hl was >= -bc
+    jr c, .sub
+    ld [de], a
+    inc de
+    ld a, l                         ; undo the subtraction that went below 0
+    sub c
+    ld l, a
+    ld a, h
+    sbc b
+    ld h, a
+    ret
+
+; CounterDigits, for U32ToAscii_B0(u32 v, u8 *buf, u8 radix) at
+; DrawBrowserDetail's counter, through CounterDigitsStub (bank0_browser.asm's
+; room): the far stub's three pads, then v at sp+8 (its high half is always
+; 0 there), buf at sp+12. See move_highlight.c.
+CounterDigits::
+    ld hl, sp+12
+    ld e, [hl]
+    inc hl
+    ld d, [hl]
+    ld hl, sp+8
+    ld a, [hl+]
+    ld h, [hl]
+    ld l, a
+    jr DigitsHLDE
+
 ; a = pixel row -> hl = its VRAM address in tile column 0. Clobbers de.
 RowAddr2:
     ld l, a

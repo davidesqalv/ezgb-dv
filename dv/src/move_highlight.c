@@ -29,6 +29,11 @@
  * section, where the recolor's di / ei would end the section early (draw12.c
  * keeps to flush_rmw there for the same reason). Returns 1 when the move is
  * done.
+ *
+ * The position goes to TabNumFar as digits from Digits4 (bank2_hilite.asm),
+ * which is also CounterDigits: DrawBrowserDetail's own conversion (the stock
+ * repaint of two rows, used by a one-row scroll) took about 1.4 frames for a
+ * number that is at most 416.
  */
 
 typedef unsigned char u8;
@@ -42,7 +47,8 @@ struct BrowserScrollState {
 
 extern void HighlightRow(u8 py);                                    /* bank2_hilite.asm */
 extern void UnhighlightRow(u8 py);
-extern void TabNum12(const u8 *s, u8 len, u8 x, u8 y);              /* 00:0380 -> TabNumFar (bank 5) */
+extern void TabNum12(const u8 *s, u8 len, u8 x, u8 y);              /* 00:0380 -> TabNumFar (bank2_tabnum.asm) */
+extern void Digits4(u16 n, u8 *buf);                                /* bank2_hilite.asm: 4 digits and a NUL */
 
 #define MQ_LAST (*(volatile u16 *)0xcc31)   /* DrawDirEntryLabel's last drawn index */
 #define MQ_CLEAN 0xEEEE                     /* the boot value: nothing scrolled since the last move */
@@ -53,8 +59,7 @@ static u8 row_y(u8 row);
 /* The entry point stays the first function in the file. */
 u8 MoveHighlight(u16 far_pad_thunk, u16 far_pad_af, u16 far_pad_ret, struct BrowserScrollState *st, u8 to) {
     volatile u8 *tick = (volatile u8 *)st - 8;
-    u16 n;
-    u8 buf[4], c;
+    u8 buf[5];
 
     (void)far_pad_thunk;
     (void)far_pad_af;
@@ -73,13 +78,7 @@ u8 MoveHighlight(u16 far_pad_thunk, u16 far_pad_af, u16 far_pad_ret, struct Brow
 
     /* the 1-based position as digits for TabNumFar, which adds "/total"
      * (the browser lists at most 416 entries) */
-    n = st->base + to + 1;
-    for (c = '0'; n >= 100; c++) n -= 100;
-    buf[0] = c;
-    for (c = '0'; (u8)n >= 10; c++) n -= 10;
-    buf[1] = c;
-    buf[2] = (u8)('0' + (u8)n);
-    buf[3] = 0;
+    Digits4(st->base + to + 1, buf);
     TabNum12(buf, 0, 0, 0);
     return 1;
 }

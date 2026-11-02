@@ -12,6 +12,7 @@ disassembly and checks it against the manifest md5. Every patch checks the
 bytes it replaces and stops if they differ.
 """
 import argparse
+import struct
 import hashlib
 import os
 import subprocess
@@ -279,7 +280,8 @@ def build(data):
     r.log.append(f"02:7480  BlitCol1Hook: the bar row in one pass ({be - 0x7480} bytes)")
     r.patch(2, 0x7d89, "f8074e", "c38074", "blit_col1 -> BlitCol1Hook")
     mo = he
-    C_BLOCKS["move_highlight.c"] = (mo, dict(C_BLOCKS["move_highlight.c"][1], UnhighlightRow=symh["UnhighlightRow"]))
+    C_BLOCKS["move_highlight.c"] = (mo, dict(C_BLOCKS["move_highlight.c"][1], UnhighlightRow=symh["UnhighlightRow"],
+                                             Digits4=symh["Digits4"]))
     mh, msyms = compile_block("move_highlight.c")
     if msyms["MoveHighlight"] != mo or mo + len(mh) > 0x8000:
         raise SystemExit(f"move_highlight.c: {len(mh)} bytes at 02:{mo:04x}, past the end of bank 2")
@@ -292,7 +294,7 @@ def build(data):
     if any(x != 0xFF for x in r.d[o:off(5, hi5)]):
         raise SystemExit("bank 5 target is not free")
     r.d[o:off(5, hi5)] = b5[o:off(5, hi5)]
-    r.log.append(f"05:{lo5:04x}  bank 5 block: scroll, counter, TOP sort, play counts, stars ({hi5 - lo5} bytes)")
+    r.log.append(f"05:{lo5:04x}  bank 5 block: scroll, TOP sort, play counts, stars ({hi5 - lo5} bytes)")
     lo, hi = sym5["ShiftRows"], sym5["__end_vrammove__"]
     assert lo == 0x7680 and hi <= 0x7700
     o = off(5, lo)
@@ -312,7 +314,15 @@ def build(data):
     rc = b2[off(2, 0x6d60):off(2, sym2["__end__"])]
     o = off(2, 0x6d60); r.d[o:o + len(rc)] = rc
     r.log.append("02:6d60  RecolorIcon: blue icons without a second pass")
-    r.patch(0, 0x0380, "3e01b7cab708f805367cc3c005", (stub(sym5["TabNumFar"], 5) + b"\xc9").hex() + "ffffffffff", "entry number -> 05 TabNumFar (n/total, green)")
+    # the counter (asm/bank2_tabnum.asm), in the room after the mod's LastRomBox block
+    bt, symt = assemble("bank2_tabnum")
+    lo, hi = symt["TabNumFar"], symt["__end_tabnum__"]
+    assert lo == 0x495c and hi <= 0x4a00
+    if any(x != 0xFF for x in r.d[off(2, lo):off(2, 0x4a00)]):
+        raise SystemExit("02:495c..49ff is not free")
+    r.d[off(2, lo):off(2, hi)] = bt[off(2, lo):off(2, hi)]
+    r.log.append(f"02:{lo:04x}  TabNumFar: the n/total counter ({hi - lo} bytes)")
+    r.patch(0, 0x0380, "3e01b7cab708f805367cc3c005", (stub(lo, 2) + b"\xc9").hex() + "ffffffffff", "entry number -> 02 TabNumFar (n/total, green)")
     # bank 0 stubs in the old scroll code's room (00:3ed8.., unreachable now)
     hook = stub(sym5["PlayCount"], 5) + bytes.fromhex("c31076")                                  # then jp LastRomSaveHook
     starq = stub(sym5["StarQuery"], 5) + b"\xc9"
@@ -359,6 +369,17 @@ def build(data):
     abstub = b"\xc5" + stub(0x7680, 4) + bytes.fromhex("3e00f533c3210f")    # push bc; AutoBackup; then the hook's own tail
     r.patch(0, 0x3e8d, "ff" * len(abstub), abstub.hex(), "AutoBackupStub")
     r.patch(0, 0x3e9c, "ff" * 8, (stub(mo, 2) + b"\xc9").hex(), "MoveHighlightStub -> 02 MoveHighlight")   # after the cave's own code is in
+    # --- the browser loop's 45 ms wait, skipped while UP/DOWN is held, and the counter's digits
+    #     without the 32-bit conversion (asm/bank0_browser.asm, then CounterDigitsStub) ---
+    b0, sym0 = assemble("bank0_browser")
+    lo, hi = sym0["BrowserDelay"], sym0["__end__"]
+    cds = hi
+    assert lo == 0x3ea4 and cds + 8 <= 0x3ec8
+    r.patch(0, lo, "ff" * (cds + 8 - lo), (b0[lo:hi] + stub(symh["CounterDigits"], 2) + b"\xc9").hex(),
+            f"BrowserDelay ({hi - lo} bytes), CounterDigitsStub at 00:{cds:04x} -> 02 CounterDigits")
+    r.patch(0, 0x110f, "cd933a", "cd" + struct.pack("<H", lo).hex(), "browser loop: Delay(45) -> BrowserDelay")
+    a = r.find_one(1, 0x4000, 0x8000, "cdf416e807f80a4d44211000e53e04f533c5cd8003", "DrawBrowserDetail's counter digits")
+    r.patch(1, a, "cdf416", "cd" + struct.pack("<H", cds).hex(), "DrawBrowserDetail: U32ToAscii_B0 -> CounterDigitsStub")
     r.patch(0, 0x03bf, "c53e00f533c3210f", "c38d3effffffffff", "SaveStampHook: after the stamp check -> AutoBackupStub")
 
     # --- FW5 fast load only on the Chromatic (asm/detect.asm) ---

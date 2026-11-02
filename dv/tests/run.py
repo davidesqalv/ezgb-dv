@@ -120,27 +120,31 @@ def t_scroll():
     # leaving the stock repaint; a wrap on a longer list redraws the page. Every move puts the marquee
     # index back to $EEEE; a held key moves after 18 frames, then every 6.
     C, K = 0xEEEE, 0x1234
-    want = [((0, 0, 1), None, 1, C, 50), ((2, 0, 1), None, 1, C, 50),
-            ((2, 1, 9), (20, 32, 24, 4), None, C, 50), ((1, 0, 0), None, None, C, 50),
-            ((1, 29, 9), None, None, C, 50), ((3, 4, 0), (136, 124, 24, 0xFC), None, C, 50),
-            ((0, 5, 2), None, 2, C, 50), ((3, 5, 2), None, 2, C, 50),
-            ((0, 0, 0), None, 0, C, 50), ((1, 0, 0), None, 0, C, 50), ((0, 0, 3), None, 3, C, 50),
-            ((0, 0, 2), None, None, K, 50), ((0, 0, 3), None, 3, C, 56),
-            ((0, 0, 1), None, 1, C, 0), ((0, 0, 1), None, 1, C, 60)]
+    # (dirty, base, sel), shift, recolor row, marquee index, repeat timer, repeat count
+    want = [((0, 0, 1), None, 1, C, 50, 0), ((2, 0, 1), None, 1, C, 50, 0),
+            ((2, 1, 9), (20, 32, 24, 4), None, C, 50, 0), ((1, 0, 0), None, None, C, 50, 0),
+            ((1, 29, 9), None, None, C, 50, 0), ((3, 4, 0), (136, 124, 24, 0xFC), None, C, 50, 0),
+            ((0, 5, 2), None, 2, C, 50, 0), ((3, 5, 2), None, 2, C, 50, 0),
+            ((0, 0, 0), None, 0, C, 50, 0), ((1, 0, 0), None, 0, C, 50, 0), ((0, 0, 3), None, 3, C, 50, 0),
+            ((0, 0, 2), None, None, K, 50, 0), ((0, 0, 3), None, 3, C, 56, 1),
+            ((0, 0, 1), None, 1, C, 0, 1), ((0, 0, 1), None, 1, C, 60, 0),
+            ((0, 0, 3), None, 3, C, 56, 2), ((0, 0, 3), None, 3, C, 55, 3),
+            ((0, 0, 3), None, 3, C, 54, 6), ((0, 0, 3), None, 3, C, 53, 6)]
     names = ["down from top", "down, declined", "down on row 9", "down on last -> wrap", "up on first -> last",
              "up row 0 mid", "up mid page", "up, declined", "short: down on last", "short: down, declined",
-             "short: up on first", "held 17 frames", "held 18 frames", "held 18, hFrame wraps", "other key down"]
+             "short: up on first", "held 17 frames", "held 18 frames", "held 18, hFrame wraps", "other key down",
+             "2nd repeat: 6 frames", "3rd repeat: 5", "6th repeat: 4", "7th on: 3"]
     for k, (n, w) in enumerate(zip(names, want)):
         r = m[16 * k:16 * k + 16]
         g = ((r[0], r[1] | r[2] << 8, r[3]), tuple(r[4:8]) if r[7] or r[6] else None, r[9] if r[8] else None,
-             r[10] | r[11] << 8, r[12])
+             r[10] | r[11] << 8, r[12], r[13])
         yield g == w, (f"scroll: {n:22} dirty={g[0][0]} base={g[0][1]} sel={g[0][2]} shift={g[1]} recolor={g[2]} "
-                       f"marquee=${g[3]:04X} timer={g[4]}" + ("" if g == w else f" (want {w})"))
+                       f"marquee=${g[3]:04X} timer={g[4]} rep={g[5]}" + ("" if g == w else f" (want {w})"))
 
 
 def t_counter():
     m, _, _ = emulate(rom("test_counter", "-m", "0x01"))
-    for k, w in enumerate(["   2/39", "  39/39", "    1/5", "100/416", "    0/0"]):
+    for k, w in enumerate(["   2/39", "  39/39", "    1/5", "100/416", "    0/0", "  39/39", "416/416"]):
         raw = m[8 * k:8 * k + 8]
         s = raw[:7].decode("ascii", "replace")
         yield s == w and raw[7] == 0, f"counter: {s!r} (want {w!r})"
@@ -227,6 +231,12 @@ def t_hilite():
     rc, rhl, rsp = m[0x10], m[0x11] | m[0x12] << 8, m[0x13] | m[0x14] << 8
     yield (rc, rhl) == (0x5A, rsp + 7), f"BlitCol1Hook, hBarBlit clear: on to blit_col1 with c = xm, hl = sp + 7 (c ${rc:02X}, hl - sp {rhl - rsp})"
     yield all(vram[a] == want[a] for a in range(0x1800)), "HighlightRow / UnhighlightRow / BlitCol1Hook: nothing else in VRAM changed"
+    for k, n in enumerate((0, 7, 39, 416, 1000, 9999)):
+        got = bytes(m[0x20 + 5 * k:0x25 + 5 * k])
+        yield got == f"{n:04d}".encode() + b"\0", f"Digits4({n}): {got!r}"
+    for k, n in enumerate((39, 416)):
+        got = bytes(m[0x40 + 5 * k:0x45 + 5 * k])
+        yield got == f"{n:04d}".encode() + b"\0", f"CounterDigits({n}) in the far stub's frame: {got!r}"
 
 
 def t_recolor():

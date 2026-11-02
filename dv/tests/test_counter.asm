@@ -1,4 +1,4 @@
-INCLUDE "bank5.asm"
+INCLUDE "bank2_tabnum.asm"
 SECTION "hdr", ROM0[$100]
     nop
     jp Main
@@ -7,7 +7,7 @@ SECTION "main", ROM0[$150]
 Main:
     di
     ld sp, $DFF0
-    ld a, 5
+    ld a, 2
     ld [$2000], a
     ld hl, Cases
     ld de, wOut
@@ -51,12 +51,18 @@ Cases:
     dw S4
     dw 0
     dw S5
+    dw 39
+    dw S6
+    dw 416
+    dw S7
     db $FF
 S1: db "2", 0
 S2: db "  39"
 S3: db "1", 0
 S4: db " 100", 0
 S5: db 0
+S6: db "0039", 0                ; Digits4's form (MoveHighlight, CounterDigits)
+S7: db "0416", 0
 SECTION "vars", WRAM0[$C000]
 wOut: ds 64
 wDone: ds 1

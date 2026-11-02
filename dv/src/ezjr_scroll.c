@@ -35,7 +35,11 @@
  * pass. A recolored move takes about 2, so a tap could move twice. Now a
  * press moves at once, and a key that was already down at the previous poll
  * (RomMenuPadTrack keeps that report at $fff5) moves again only after
- * REPEAT_DELAY frames, then every REPEAT_RATE.
+ * REPEAT_DELAY frames, then every REPEAT_RATE, one frame quicker every
+ * 1 << RAMP_SHIFT repeats down to REPEAT_FAST. While UP or DOWN is held the loop
+ * also skips the stock 45 ms delay at its top (BrowserDelay,
+ * dv/asm/bank0_browser.asm), so the pace is these frame counts and the time
+ * a move takes, whichever is longer.
  */
 #define ROWS 10
 #define ENTRY_COUNT (*(volatile unsigned int *)0xc2a2)
@@ -46,13 +50,17 @@
 #define UP_DST_Y 136                /* ...and where it goes, ROW_H lower */
 #define MQ_LAST (*(volatile unsigned int *)0xcc31)   /* DrawDirEntryLabel's last drawn index */
 #define MQ_CLEAN 0xEEEE                              /* its boot value: nothing scrolled */
-#define PAD_PREV (*(volatile unsigned char *)0xfff5) /* RomMenuPadTrack: the previous poll's report */
-#define HFRAME   (*(volatile unsigned char *)0xfffa) /* +1 per VBlank */
-#define HOLD_T   (*(volatile unsigned char *)0xfff2) /* hFrame at the press, moved on at each repeat (HRAM no code uses) */
+__sfr __at(0xfff5) PAD_PREV;                           /* RomMenuPadTrack: the previous poll's report (HRAM, __sfr so that SDCC uses ldh) */
+__sfr __at(0xfffa) HFRAME;                             /* +1 per VBlank */
+__sfr __at(0xfff2) HOLD_T;                             /* hFrame at the press, moved on at each repeat (HRAM no code uses) */
 #define PAD_UP   0x04
 #define PAD_DOWN 0x08
+__sfr __at(0xfff4) REP_N;                              /* repeats since the press, up to RAMP_N (HRAM no code uses) */
 #define REPEAT_DELAY 18                              /* frames held before the first repeat (0.3 s) */
-#define REPEAT_RATE  6                               /* frames between repeats */
+#define REPEAT_RATE  6                               /* frames between the first repeats (10 a second) */
+#define REPEAT_FAST  3                               /* ...and the last (20 a second) */
+#define RAMP_SHIFT   1                               /* 1 << RAMP_SHIFT repeats at each rate on the way */
+#define RAMP_N ((REPEAT_RATE - REPEAT_FAST) << RAMP_SHIFT)
 
 extern void ShiftRows(unsigned char dst_y, unsigned char src_y, unsigned char batches, signed char step);  /* 05:7680 */
 
@@ -123,18 +131,26 @@ static void up(struct BrowserScrollState *st) {
 }
 
 /* 1 when this report of `key` should move: a press, or a key held for
- * REPEAT_DELAY frames, then every REPEAT_RATE. */
+ * REPEAT_DELAY frames, then after 6 6 5 5 4 4 3 3 ... frames (HOLD_T is set
+ * so that the next repeat is `rate` frames on). */
 static unsigned char repeat_ok(unsigned char key) {
-    unsigned char now = HFRAME;
+    unsigned char now = HFRAME, n, rate;
 
     if (!(PAD_PREV & key)) {
         HOLD_T = now;
+        REP_N = 0;
         return 1;
     }
     if ((unsigned char)(now - HOLD_T) < REPEAT_DELAY) {
         return 0;
     }
-    HOLD_T = (unsigned char)(now - (REPEAT_DELAY - REPEAT_RATE));
+    n = REP_N;
+    rate = REPEAT_FAST;
+    if (n < RAMP_N) {
+        rate = (unsigned char)(REPEAT_RATE - (n >> RAMP_SHIFT));
+        REP_N = (unsigned char)(n + 1);
+    }
+    HOLD_T = (unsigned char)(now - (REPEAT_DELAY - rate));
     return 1;
 }
 
