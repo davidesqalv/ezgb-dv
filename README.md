@@ -24,7 +24,14 @@ games from an SD card. It's based on [lukesau's ezgb](https://github.com/lukesau
   Play counts are saved on the cartridge. A setting switches to A–Z.
 - **Stars:** hold A on a game and pick Star to keep it at the top.
 - **Navigation:** the list wraps around at both ends, with a position counter
-  (5/62).
+  (5/62). Moving the cursor within the page recolors the two rows instead of
+  drawing their names again, so it takes about half as long; so does wrapping
+  around on a list that fits one page. Scrolling past the top or bottom row
+  slides the list and draws only the rows it uncovers, instead of redrawing
+  all ten; a wrap on a longer list draws the cursor's row first. Holding UP
+  or DOWN repeats after a short pause and speeds up the longer it's held,
+  from 10 to 20 moves a second; once the list scrolls it keeps that pace by
+  moving up to 4 rows at a time.
 - **Daily save backup:** the first time the console starts each day after a
   game was played, the menu copies that game's save to a backup before
   writing the new one over it, with a box that says which game and about how
@@ -59,7 +66,7 @@ features (mod 6.9). ezgb-dv builds on that version:
   number; the Chromatic, an FPGA re-creation of the console, returns 0. An
   original Game Boy also returns 0, so the menu first checks for a register
   that only exists on Game Boy Color hardware.
-- **Testing.** 51 automated tests run each new piece of code in the PyBoy
+- **Testing.** 85 automated tests run each new piece of code in the PyBoy
   emulator. 9 more boot the whole menu in the SameBoy emulator with a test SD
   card and check what the save backup leaves on it. The screenshots come from
   a script that runs the menu in SameBoy and presses the buttons.

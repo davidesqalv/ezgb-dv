@@ -12,6 +12,7 @@ disassembly and checks it against the manifest md5. Every patch checks the
 bytes it replaces and stops if they differ.
 """
 import argparse
+import struct
 import hashlib
 import os
 import subprocess
@@ -58,10 +59,11 @@ def mod_kernel():
 
 # dv/src/<file>: (code origin, symbols pinned to kernel addresses)
 C_BLOCKS = {
-    "browser_icons.c":          (0x6b80, {"DrawString12": 0x7500, "wDrawColor": 0xd734, "RecolorIcon": 0x6d60}),
+    "browser_icons.c":          (0x6b80, {"DrawString12": 0x7500, "wDrawColor": 0xd734, "wDrawColorB": 0xd735,
+                                          "RecolorIcon": 0x6d60, "wIntNest": 0xd6d0, "hClip12": 0xfff9, "hBarBlit": 0xfff3}),
     "browser_scroll_repaint.c": (0x3d8c, {"browser_scroll_down": 0x3ed0, "FarCallDrawDetailBottom": 0x03dc, "DrawString": 0x08b7,
                                           "StoreDrawParams": 0x2791, "DrawNameWithIcon": 0x3ec8}),
-    "ezjr_scroll.c":            (0x7962, {}),
+    "ezjr_scroll.c":            (0x7962, {"MoveHighlightStub": 0x3e9c, "RepaintRowsStub": 0x3eba}),
     "rom_menu.c":               (0x5a00, {"FarCallDrawString12": 0x05c0, "LastRomNameStub": 0x0368, "LastRomTickStub": 0x0370,
                                           "FarCallDrawLoadingBox": 0x0483, "ManageSaves": 0x6d11, "DrawRect": 0x27ba,
                                           "StoreDrawParams": 0x2791, "StarQueryStub": 0x3ee4, "StarToggleStub": 0x3eec,
@@ -70,6 +72,9 @@ C_BLOCKS = {
     "flcfg.c":                  (0x6600, {"FarCallEzCfg": 0x5f00, "SetFpgaPage_B4": 0x466e, "DrawString": 0x08b7,
                                           "DrawRect": 0x27ba, "StoreDrawParams": 0x2791, "ReadJoypad": 0x3a4a,
                                           "SetText": 0x6400}),
+    "move_highlight.c":         (None, {"HighlightRow": 0x7e02, "TabNum12": 0x0380}),   # origin and UnhighlightRow: bank2_hilite's map
+    "rows_repaint.c":           (0x7d60, {"ShiftRows": 0x7cd0, "StoreDrawParams": 0x2791, "DrawNameWithIcon": 0x3ec8,
+                                          "CounterDigitsStub": 0x3eb2, "TabNum12": 0x0380}),
     "auto_backup.c":            (0x7680, {"SmSaveOp": 0x6562, "RtcReadPage": 0x1a9a, "FarCallDrawString12": 0x05c0,
                                           "LastRomNameStub": 0x0368, "DrawRect": 0x27ba, "StoreDrawParams": 0x2791}),
 }
@@ -258,13 +263,55 @@ def build(data):
     r.log.append(f"02:6b80  DrawNameWithIcon: one pass + RecolorIcon ({len(code)} bytes)")
     r.patch(0, 0x3ec8, "cd8d07807e0200c9", "cd8d07806b0200c9", "row-draw stub -> 02:6b80")
 
+    # --- the selection bar as a VRAM recolor (asm/bank2_hilite.asm at 02:7e02, move_highlight.c right
+    #     after it, through MoveHighlightStub at 00:3e9c), over upstream's browser_icons.c at 02:7e80,
+    #     which nothing calls since the stub above moved to 02:6b80; and drawn in one pass (BlitCol1Hook
+    #     at 02:7480, in the gap between the mod's LastRomName and DrawString12) ---
+    hb, symh = assemble("bank2_hilite")
+    assert symh["HighlightRow"] == 0x7e02 and symh["BlitCol1Hook"] == 0x7480
+    if any(x != 0xFF for x in r.d[off(2, 0x7e02):off(2, 0x7e80)]):
+        raise SystemExit("02:7e02 is not free")
+    r.d[off(2, 0x7e02):off(2, 0x7e02) + 0x1fe] = b"\xff" * 0x1fe                       # 02:7e02..7fff
+    he = symh["__end_hilite__"]
+    r.d[off(2, 0x7e02):off(2, he)] = hb[off(2, 0x7e02):off(2, he)]
+    r.log.append(f"02:7e02  HighlightRow / UnhighlightRow: the selection bar as a VRAM recolor ({he - 0x7e02} bytes)")
+    be = symh["__end_barblit__"]
+    if be > 0x7500 or any(x != 0xFF for x in r.d[off(2, 0x7480):off(2, 0x7500)]):
+        raise SystemExit("02:7480..74ff is not free")
+    r.d[off(2, 0x7480):off(2, be)] = hb[off(2, 0x7480):off(2, be)]
+    r.log.append(f"02:7480  BlitCol1Hook: the bar row in one pass ({be - 0x7480} bytes)")
+    r.patch(2, 0x7d89, "f8074e", "c38074", "blit_col1 -> BlitCol1Hook")
+    mo = he
+    C_BLOCKS["move_highlight.c"] = (mo, dict(C_BLOCKS["move_highlight.c"][1], UnhighlightRow=symh["UnhighlightRow"],
+                                             Digits4=symh["Digits4"]))
+    mh, msyms = compile_block("move_highlight.c")
+    if msyms["MoveHighlight"] != mo or mo + len(mh) > 0x8000:
+        raise SystemExit(f"move_highlight.c: {len(mh)} bytes at 02:{mo:04x}, past the end of bank 2")
+    r.d[off(2, mo):off(2, mo) + len(mh)] = mh
+    r.log.append(f"02:{mo:04x}  MoveHighlight: a move within the page recolors two rows ({len(mh)} bytes, {0x8000 - mo - len(mh)} left)")
+
     # --- wrap-around, n/total counter, SORT TOP + play counts, stars ---
     lo5, hi5 = 0x7962, sym5["__end__"]
     o = off(5, lo5)
     if any(x != 0xFF for x in r.d[o:off(5, hi5)]):
         raise SystemExit("bank 5 target is not free")
     r.d[o:off(5, hi5)] = b5[o:off(5, hi5)]
-    r.log.append(f"05:{lo5:04x}  bank 5 block: scroll, counter, TOP sort, play counts, stars ({hi5 - lo5} bytes)")
+    r.log.append(f"05:{lo5:04x}  bank 5 block: scroll, TOP sort, play counts, stars ({hi5 - lo5} bytes)")
+    # --- scrolls and long-list wraps: ShiftRows and RepaintRows in bank 4's free tail (asm/bank4_rows.asm,
+    #     rows_repaint.c), through RepaintRowsStub (00:3eba) ---
+    b4r, sym4r = assemble("bank4_rows")
+    lo, hi = sym4r["ShiftRows"], sym4r["__end_vrammove__"]
+    rr_lo = C_BLOCKS["rows_repaint.c"][0]
+    assert lo == 0x7cd0 and hi <= rr_lo
+    if any(x != 0xFF for x in r.d[off(4, 0x7cc2):off(4, 0x7fff) + 1]):
+        raise SystemExit("04:7cc2..7fff is not free")
+    r.d[off(4, lo):off(4, hi)] = b4r[off(4, lo):off(4, hi)]
+    r.log.append(f"04:{lo:04x}  ShiftRows: a scroll moves the rows that stay in VRAM ({hi - lo} bytes)")
+    rr, rr_syms = compile_block("rows_repaint.c")
+    if rr_syms["RepaintRows"] != rr_lo or rr_lo + len(rr) > 0x8000:
+        raise SystemExit(f"rows_repaint.c: {len(rr)} bytes at 04:{rr_lo:04x}, past the end of bank 4")
+    r.d[off(4, rr_lo):off(4, rr_lo) + len(rr)] = rr
+    r.log.append(f"04:{rr_lo:04x}  RepaintRows: rows a scroll or a wrap uncovers, the bar first ({len(rr)} bytes, {0x8000 - rr_lo - len(rr)} left)")
     r.patch(0, 0x3ed0, r.d[off(0, 0x3ed0):off(0, 0x3ed8)].hex(), (stub(scroll_syms["ezjr_scroll_down"], 5) + b"\xc9").hex(), "DOWN -> 05 ezjr_scroll_down (wraps)")
     r.patch(0, 0x3fbb, r.d[off(0, 0x3fbb):off(0, 0x3fc3)].hex(), (stub(scroll_syms["ezjr_scroll_up"], 5) + b"\xc9").hex(), "UP (hook 00:02f0 calls 3fbb) -> 05 ezjr_scroll_up (wraps)")
     # the down hook's repaint: only a one-line shift is painted bottom-up, a wrap gets the full repaint
@@ -277,7 +324,15 @@ def build(data):
     rc = b2[off(2, 0x6d60):off(2, sym2["__end__"])]
     o = off(2, 0x6d60); r.d[o:o + len(rc)] = rc
     r.log.append("02:6d60  RecolorIcon: blue icons without a second pass")
-    r.patch(0, 0x0380, "3e01b7cab708f805367cc3c005", (stub(sym5["TabNumFar"], 5) + b"\xc9").hex() + "ffffffffff", "entry number -> 05 TabNumFar (n/total, green)")
+    # the counter (asm/bank2_tabnum.asm), in the room after the mod's LastRomBox block
+    bt, symt = assemble("bank2_tabnum")
+    lo, hi = symt["TabNumFar"], symt["__end_tabnum__"]
+    assert lo == 0x495c and hi <= 0x4a00
+    if any(x != 0xFF for x in r.d[off(2, lo):off(2, 0x4a00)]):
+        raise SystemExit("02:495c..49ff is not free")
+    r.d[off(2, lo):off(2, hi)] = bt[off(2, lo):off(2, hi)]
+    r.log.append(f"02:{lo:04x}  TabNumFar: the n/total counter ({hi - lo} bytes)")
+    r.patch(0, 0x0380, "3e01b7cab708f805367cc3c005", (stub(lo, 2) + b"\xc9").hex() + "ffffffffff", "entry number -> 02 TabNumFar (n/total, green)")
     # bank 0 stubs in the old scroll code's room (00:3ed8.., unreachable now)
     hook = stub(sym5["PlayCount"], 5) + bytes.fromhex("c31076")                                  # then jp LastRomSaveHook
     starq = stub(sym5["StarQuery"], 5) + b"\xc9"
@@ -323,6 +378,21 @@ def build(data):
     r.log.append(f"04:7680  AutoBackup: back the save up on the day's first dump, one kept ({len(ab)} bytes)")
     abstub = b"\xc5" + stub(0x7680, 4) + bytes.fromhex("3e00f533c3210f")    # push bc; AutoBackup; then the hook's own tail
     r.patch(0, 0x3e8d, "ff" * len(abstub), abstub.hex(), "AutoBackupStub")
+    r.patch(0, 0x3e9c, "ff" * 8, (stub(mo, 2) + b"\xc9").hex(), "MoveHighlightStub -> 02 MoveHighlight")   # after the cave's own code is in
+    # --- the browser loop's 45 ms wait, skipped while UP/DOWN is held, and the counter's digits
+    #     without the 32-bit conversion (asm/bank0_browser.asm, then CounterDigitsStub) ---
+    b0, sym0 = assemble("bank0_browser")
+    lo, hi = sym0["BrowserDelay"], sym0["__end__"]
+    cds, rrs = hi, hi + 8
+    assert lo == 0x3ea4 and cds == C_BLOCKS["rows_repaint.c"][1]["CounterDigitsStub"]
+    assert rrs == C_BLOCKS["ezjr_scroll.c"][1]["RepaintRowsStub"] and rrs + 8 <= 0x3ec8
+    r.patch(0, lo, "ff" * (rrs + 8 - lo),
+            (b0[lo:hi] + stub(symh["CounterDigits"], 2) + b"\xc9" + stub(rr_lo, 4) + b"\xc9").hex(),
+            f"BrowserDelay ({hi - lo} bytes), CounterDigitsStub at 00:{cds:04x} -> 02 CounterDigits, "
+            f"RepaintRowsStub at 00:{rrs:04x} -> 04 RepaintRows")
+    r.patch(0, 0x110f, "cd933a", "cd" + struct.pack("<H", lo).hex(), "browser loop: Delay(45) -> BrowserDelay")
+    a = r.find_one(1, 0x4000, 0x8000, "cdf416e807f80a4d44211000e53e04f533c5cd8003", "DrawBrowserDetail's counter digits")
+    r.patch(1, a, "cdf416", "cd" + struct.pack("<H", cds).hex(), "DrawBrowserDetail: U32ToAscii_B0 -> CounterDigitsStub")
     r.patch(0, 0x03bf, "c53e00f533c3210f", "c38d3effffffffff", "SaveStampHook: after the stamp check -> AutoBackupStub")
 
     # --- FW5 fast load only on the Chromatic (asm/detect.asm) ---

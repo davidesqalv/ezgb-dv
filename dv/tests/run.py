@@ -51,15 +51,27 @@ def prepare():
     os.makedirs(OUT, exist_ok=True)
     kernel = build.mod_kernel()
     open(os.path.join(OUT, "gfxrowtable.bin"), "wb").write(kernel[0x2fbb:0x2fbb + 288])
+    open(os.path.join(OUT, "hilite_vram.bin"), "wb").write(hilite_pattern(kernel[0x2fbb:0x2fbb + 288]))
+    tab = kernel[0x2fbb:0x2fbb + 288]
+    with open(os.path.join(OUT, "hilite_bar.inc"), "w") as f:
+        f.write("".join(f"DEF BAR_COL{c} EQU ${0x8000 + hilite_addrs(tab, 80)[c]:04X}\n" for c in (3, 7)))
     open(os.path.join(OUT, "rank_table.bin"), "wb").write(rank_table.table_bytes(rank_table.load(os.path.join(DV, "ranking.txt"))))
-    for origin, name in ((0x7962, "ezjr_scroll_7962.bin"), (0x1000, "scroll_test_1000.bin")):
+    # RepaintRowsStub and MoveHighlightStub are the far stubs at 00:3eba and 00:3e9c in the real build,
+    # test_scroll.asm's recorders at $0F00 and $0F40 in the test ROM
+    for origin, name, rep, move in ((0x7962, "ezjr_scroll_7962.bin", 0x3EBA, 0x3E9C), (0x1000, "scroll_test_1000.bin", 0x0F00, 0x0F40)):
         w = tempfile.mkdtemp(dir=OUT)
-        ihx, _ = compile_c(os.path.join(DV, "src", "ezjr_scroll.c"), w, pins=[], code_origin=origin)
+        ihx, _ = compile_c(os.path.join(DV, "src", "ezjr_scroll.c"), w, pins=[("_RepaintRowsStub", rep), ("_MoveHighlightStub", move)],
+                           code_origin=origin)
         mem = parse_ihx(ihx)
         open(os.path.join(OUT, name), "wb").write(bytes(mem.get(a, 0xFF) for a in range(min(mem), max(mem) + 1)))
         if origin == 0x1000:
-            noi = open(os.path.join(w, "out.noi")).read()
-            assert "_ezjr_scroll_up 0x10A6" in noi, "test_scroll.asm expects ezjr_scroll_up at $10A6"
+            syms = {}
+            for line in open(os.path.join(w, "out.noi")):
+                f = line.split()
+                if len(f) == 3 and f[0] == "DEF":
+                    syms[f[1]] = int(f[2], 16)
+            with open(os.path.join(OUT, "scroll_syms.inc"), "w") as f:
+                f.write(f"DEF Down EQU ${syms['_ezjr_scroll_down']:04X}\nDEF Up EQU ${syms['_ezjr_scroll_up']:04X}\n")
 
 
 def expect_top():
@@ -101,17 +113,45 @@ def t_ext():
 
 def t_scroll():
     m, _, _ = emulate(rom("test_scroll"))
-    want = [(2, 0, 1), (1, 1, 9), (1, 0, 0), (1, 29, 9), (1, 4, 0), (3, 5, 2), (1, 0, 0), (1, 0, 3)]
-    names = ["down from top", "down on row 9", "down on last -> wrap", "up on first -> last", "up row 0 mid",
-             "up mid page", "short: down on last", "short: up on first"]
+    # per case (test_scroll.asm): (dirty, base, sel), the RepaintRows call (k, up) or None, the
+    # MoveHighlight call's row or None, the marquee index after, the repeat timer and count after.
+    # A move in the window goes to MoveHighlight, which here does what it does to the state
+    # (dirty 0) or declines, leaving the stock repaint. A scroll or a wrap on a longer list goes to
+    # RepaintRows (k rows, 9 for a wrap), which moves the window itself, so base stays as it was here;
+    # a wrap sets base and sel first. A press scrolls by 1, a held key by 1 1 2 2 3 3 4 rows, never
+    # past either end. Every move puts the marquee index back to $EEEE; a held key moves after
+    # 18 frames, then after 6 6 5 5 4 4 3 frames.
+    C, K = 0xEEEE, 0x1234
+    want = [((0, 0, 1), None, 1, C, 50, 0), ((2, 0, 1), None, 1, C, 50, 0),
+            ((0, 0, 9), (1, 0), None, C, 50, 0), ((0, 0, 0), (9, 0), None, C, 50, 0),
+            ((0, 29, 9), (9, 1), None, C, 50, 0), ((0, 5, 0), (1, 1), None, C, 50, 0),
+            ((0, 5, 2), None, 2, C, 50, 0), ((3, 5, 2), None, 2, C, 50, 0),
+            ((0, 0, 0), None, 0, C, 50, 0), ((1, 0, 0), None, 0, C, 50, 0), ((0, 0, 3), None, 3, C, 50, 0),
+            ((0, 0, 2), None, None, K, 50, 0), ((0, 0, 3), None, 3, C, 56, 1),
+            ((0, 0, 1), None, 1, C, 0, 1), ((0, 0, 1), None, 1, C, 60, 0),
+            ((0, 0, 3), None, 3, C, 56, 2), ((0, 0, 3), None, 3, C, 55, 3),
+            ((0, 0, 3), None, 3, C, 54, 6), ((0, 0, 3), None, 3, C, 53, 6),
+            ((0, 0, 9), (2, 0), None, C, 55, 3), ((0, 0, 9), (4, 0), None, C, 53, 6),
+            ((0, 27, 9), (2, 0), None, C, 53, 6), ((0, 28, 9), (1, 0), None, C, 53, 6),
+            ((0, 5, 0), (3, 1), None, C, 54, 5), ((0, 2, 0), (2, 1), None, C, 53, 6),
+            ((0, 1, 0), (1, 1), None, C, 53, 6)]
+    names = ["down from top", "down, declined", "down on row 9", "down on last -> wrap", "up on first -> last",
+             "up row 0 mid", "up mid page", "up, declined", "short: down on last", "short: down, declined",
+             "short: up on first", "held 17 frames", "held 18 frames", "held 18, hFrame wraps", "other key down",
+             "2nd repeat: 6 frames", "3rd repeat: 5", "6th repeat: 4", "7th on: 3",
+             "row 9, 3rd repeat: 2 rows", "row 9, 7th on: 4 rows", "row 9, 2 left: 2 rows", "row 9, 1 left: 1 row",
+             "row 0, 5th repeat: 3 up", "row 0, 2 above: 2 up", "row 0, 1 above: 1 up"]
     for k, (n, w) in enumerate(zip(names, want)):
-        g = (m[4 * k], m[4 * k + 1] | m[4 * k + 2] << 8, m[4 * k + 3])
-        yield g == w, f"scroll: {n:22} dirty={g[0]} base={g[1]} sel={g[2]} (want {w})"
+        r = m[16 * k:16 * k + 16]
+        g = ((r[0], r[1] | r[2] << 8, r[3]), (r[5], r[6]) if r[4] else None, r[9] if r[8] else None,
+             r[10] | r[11] << 8, r[12], r[13])
+        yield g == w, (f"scroll: {n:24} dirty={g[0][0]} base={g[0][1]} sel={g[0][2]} rows={g[1]} recolor={g[2]} "
+                       f"marquee=${g[3]:04X} timer={g[4]} rep={g[5]}" + ("" if g == w else f" (want {w})"))
 
 
 def t_counter():
     m, _, _ = emulate(rom("test_counter", "-m", "0x01"))
-    for k, w in enumerate(["   2/39", "  39/39", "    1/5", "100/416", "    0/0"]):
+    for k, w in enumerate(["   2/39", "  39/39", "    1/5", "100/416", "    0/0", "  39/39", "416/416"]):
         raw = m[8 * k:8 * k + 8]
         s = raw[:7].decode("ascii", "replace")
         yield s == w and raw[7] == 0, f"counter: {s!r} (want {w!r})"
@@ -153,6 +193,59 @@ def t_init():
     yield m[260:264] == b"EZJR", "first use: EZJR signature written"
 
 
+ICON_MASK = [0x00, 0x7F] + [0xFF] * 18     # plane 0 of a plain row: RecolorIcon's blue icon at x 0..8
+
+
+def hilite_addrs(tab, py):
+    """VRAM offsets (from $8000) of pixel row py's plane-0 byte in each of the 20 tile columns."""
+    return [(tab[2 * py] | tab[2 * py + 1] << 8) - 0x8000 + 16 * c for c in range(20)]
+
+
+def hilite_pattern(tab):
+    """Random VRAM, except list row 3 (y 56..67), shaped like a plain row."""
+    import random
+    rng = random.Random(12)
+    v = bytearray(rng.randrange(256) for _ in range(0x1800))
+    for py in range(56, 68):
+        for c, a in enumerate(hilite_addrs(tab, py)):
+            g = rng.randrange(256)
+            v[a], v[a + 1] = g & ICON_MASK[c], g
+    return bytes(v)
+
+
+def t_hilite():
+    m, vram, _ = emulate(rom("test_hilite", "-m", "0x01"))
+    tab = open(os.path.join(OUT, "gfxrowtable.bin"), "rb").read()
+    want = bytearray(open(os.path.join(OUT, "hilite_vram.bin"), "rb").read())
+    for py in range(32, 44):                          # plain -> bar: plane 0 = ~(p0 | p1), plane 1 = 0
+        for a in hilite_addrs(tab, py):
+            want[a], want[a + 1] = ~(want[a] | want[a + 1]) & 0xFF, 0
+    for py in range(44, 56):                          # bar -> plain: g = ~p0; plane 0 = g minus the icon, plane 1 = g
+        for c, a in enumerate(hilite_addrs(tab, py)):
+            g = ~want[a] & 0xFF
+            want[a], want[a + 1] = g & ICON_MASK[c], g
+    src = [0x00, 0xFF, 0x81, 0x7E, 0x3C, 0xC3, 0x18, 0xE7, 0x01, 0x80, 0x55, 0xAA]     # Src12
+    for c, xm in ((3, 0x00), (7, 0xFF)):              # BlitCol1Hook, hBarBlit set: plane 0 = bits ^ xm ^ $FF, plane 1 = 0
+        for r, py in enumerate(range(80, 92)):
+            a = hilite_addrs(tab, py)[c]
+            want[a], want[a + 1] = src[r] ^ xm ^ 0xFF, 0
+    rows = lambda lo, hi: [b for py in range(lo, hi) for a in hilite_addrs(tab, py) for b in (a, a + 1)]
+    yield m[0] == 0xAA and all(vram[a] == want[a] for a in rows(32, 44)), "HighlightRow: 12 rows x 20 columns, plane 0 = ~(p0 | p1), plane 1 = 0"
+    yield all(vram[a] == want[a] for a in rows(44, 56)), "UnhighlightRow: plane 0 = ~p0 minus the icon (x 0..8), plane 1 = ~p0"
+    yield all(vram[a] == want[a] for a in rows(56, 68)), "HighlightRow then UnhighlightRow: a plain row comes back byte for byte"
+    bar = [b for py in range(80, 92) for c in (3, 7) for b in (hilite_addrs(tab, py)[c], hilite_addrs(tab, py)[c] + 1)]
+    yield all(vram[a] == want[a] for a in bar), "BlitCol1Hook, hBarBlit set: 12 rows across a tile edge, plane 0 = bits ^ xm ^ $FF, plane 1 = 0"
+    rc, rhl, rsp = m[0x10], m[0x11] | m[0x12] << 8, m[0x13] | m[0x14] << 8
+    yield (rc, rhl) == (0x5A, rsp + 7), f"BlitCol1Hook, hBarBlit clear: on to blit_col1 with c = xm, hl = sp + 7 (c ${rc:02X}, hl - sp {rhl - rsp})"
+    yield all(vram[a] == want[a] for a in range(0x1800)), "HighlightRow / UnhighlightRow / BlitCol1Hook: nothing else in VRAM changed"
+    for k, n in enumerate((0, 7, 39, 416, 1000, 9999)):
+        got = bytes(m[0x20 + 5 * k:0x25 + 5 * k])
+        yield got == f"{n:04d}".encode() + b"\0", f"Digits4({n}): {got!r}"
+    for k, n in enumerate((39, 416)):
+        got = bytes(m[0x40 + 5 * k:0x45 + 5 * k])
+        yield got == f"{n:04d}".encode() + b"\0", f"CounterDigits({n}) in the far stub's frame: {got!r}"
+
+
 def t_recolor():
     m, vram, nest = emulate(rom("test_recolor", "-m", "0x01"))
     tab = open(os.path.join(OUT, "gfxrowtable.bin"), "rb").read()
@@ -169,7 +262,7 @@ def t_recolor():
 def main():
     prepare()
     passed = failed = 0
-    for t in (t_ext, t_scroll, t_counter, t_top, t_star, t_init, t_recolor):
+    for t in (t_ext, t_scroll, t_counter, t_top, t_star, t_init, t_recolor, t_hilite):
         for ok, label in t():
             print(("ok  " if ok else "FAIL"), label)
             passed += ok
